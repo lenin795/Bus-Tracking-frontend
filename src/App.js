@@ -38,7 +38,7 @@ function App() {
             } 
           />
           <Route path="/test" element={<ConnectionTest />} />
-          <Route path="/" element={<Navigate to="/track" />} />
+          <Route path="/" element={<Navigate to="/login" />} />
         </Routes>
       </Router>
     </AuthProvider>

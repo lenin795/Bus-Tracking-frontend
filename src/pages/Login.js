@@ -113,21 +113,7 @@ const Login = () => {
           </p>
         </div>
 
-        <div className="mt-8 text-center">
-          <div className="inline-block bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-6 border-2 border-blue-200">
-            <p className="text-sm font-semibold text-gray-700 mb-3">Demo Credentials:</p>
-            <div className="space-y-2 text-sm">
-              <div className="bg-white rounded-lg p-2">
-                <p className="font-semibold text-blue-600">Admin</p>
-                <p className="text-gray-600">admin@bus.com / admin123</p>
-              </div>
-              <div className="bg-white rounded-lg p-2">
-                <p className="font-semibold text-green-600">Driver</p>
-                <p className="text-gray-600">driver@bus.com / driver123</p>
-              </div>
-            </div>
-          </div>
-        </div>
+        
 
         <div className="mt-6 text-center">
           <Link 
