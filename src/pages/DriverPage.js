@@ -42,8 +42,12 @@ const DriverPage = () => {
 
   useEffect(() => {
     fetchBus();
-    socketRef.current = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000');
     
+   // Replace with:
+   socketRef.current = io(process.env.REACT_APP_API_URL || 'http://localhost:5000', {
+     transports: ['websocket', 'polling'],
+     withCredentials: true
+   });
     return () => {
       stopSharing();
       if (socketRef.current) {
