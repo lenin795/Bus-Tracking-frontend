@@ -11,7 +11,7 @@ const ConnectionTest = () => {
     
     try {
       // Test 1: Check if backend is reachable
-      const response = await axios.get('http://localhost:5000/api/auth/me');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/api/auth/me`);
       setResult('❌ Backend responded but expected error (this is good!):\n' + JSON.stringify(response.data, null, 2));
     } catch (error) {
       if (error.response) {
