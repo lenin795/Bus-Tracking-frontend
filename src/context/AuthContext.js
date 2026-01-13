@@ -24,11 +24,12 @@ export const AuthProvider = ({ children }) => {
     if (token) {
       try {
         const response = await axios.get(
-          `${process.env.REACT_APP_API_URL}/auth/me`,
+          `${process.env.REACT_APP_API_URL}/api/auth/me`, // ✅ Added /api/
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setUser(response.data.user);
       } catch (error) {
+        console.error('Auth check failed:', error);
         localStorage.removeItem('token');
       }
     }
@@ -36,25 +37,35 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = async (email, password, role) => {
-    const response = await axios.post(
-      `${process.env.REACT_APP_API_URL}/auth/login`,
-      { email, password, role }
-    );
-    
-    localStorage.setItem('token', response.data.token);
-    setUser(response.data.user);
-    return response.data;
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/api/auth/login`, // ✅ Added /api/
+        { email, password, role }
+      );
+      
+      localStorage.setItem('token', response.data.token);
+      setUser(response.data.user);
+      return response.data;
+    } catch (error) {
+      console.error('Login failed:', error.response?.data || error.message);
+      throw error;
+    }
   };
 
   const register = async (name, email, password, role, phone) => {
-    const response = await axios.post(
-      `${process.env.REACT_APP_API_URL}/auth/register`,
-      { name, email, password, role, phone }
-    );
-    
-    localStorage.setItem('token', response.data.token);
-    setUser(response.data.user);
-    return response.data;
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/api/auth/register`, // ✅ Added /api/
+        { name, email, password, role, phone }
+      );
+      
+      localStorage.setItem('token', response.data.token);
+      setUser(response.data.user);
+      return response.data;
+    } catch (error) {
+      console.error('Registration failed:', error.response?.data || error.message);
+      throw error;
+    }
   };
 
   const logout = () => {
