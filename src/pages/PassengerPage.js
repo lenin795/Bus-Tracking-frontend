@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2 } from 'lucide-react';
+import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Html5QrcodeScanner } from 'html5-qrcode';
@@ -31,6 +31,14 @@ const stopIcon = new L.divIcon({
   iconAnchor: [12, 12]
 });
 
+// Small stop marker for route stops
+const routeStopIcon = new L.divIcon({
+  html: '<div style="background: #10B981; border: 2px solid white; border-radius: 50%; width: 16px; height: 16px;"></div>',
+  className: '',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8]
+});
+
 // Component to update map view dynamically
 function MapUpdater({ center }) {
   const map = useMap();
@@ -51,12 +59,14 @@ const PassengerPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [mapCenter, setMapCenter] = useState(null);
+  const [mapType, setMapType] = useState('street'); // 'street' or 'satellite'
+  const [routeCoordinates, setRouteCoordinates] = useState([]); // For route polyline
   
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
 
   useEffect(() => {
-    // ✅ Initialize Socket.IO connection
+    // Initialize Socket.IO connection
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
@@ -69,7 +79,7 @@ const PassengerPage = () => {
     socketRef.current.on('connect', () => {
       console.log('✅ Socket connected:', socketRef.current.id);
       
-      // ✅ Re-subscribe to all buses when reconnected
+      // Re-subscribe to all buses when reconnected
       nearestBuses.forEach(bus => {
         socketRef.current.emit('passenger:track-bus', { busId: bus._id });
         console.log('📡 Subscribed to bus:', bus.busNumber);
@@ -84,7 +94,7 @@ const PassengerPage = () => {
       console.error('🔴 Socket connection error:', error.message);
     });
 
-    // ✅ Listen for real-time bus location updates
+    // Listen for real-time bus location updates
     socketRef.current.on('bus:location-update', (data) => {
       console.log('📍 Bus location update:', data);
       
@@ -112,7 +122,7 @@ const PassengerPage = () => {
       }));
     });
 
-    // ✅ Handle bus going offline
+    // Handle bus going offline
     socketRef.current.on('bus:offline', (data) => {
       console.log('🔴 Bus offline:', data.busId);
       
@@ -138,9 +148,9 @@ const PassengerPage = () => {
         scannerRef.current.clear().catch(console.error);
       }
     };
-  }, []); // Only run once on mount
+  }, []);
 
-  // ✅ Subscribe to buses when nearestBuses changes
+  // Subscribe to buses when nearestBuses changes
   useEffect(() => {
     if (socketRef.current && socketRef.current.connected && nearestBuses.length > 0) {
       nearestBuses.forEach(bus => {
@@ -149,6 +159,13 @@ const PassengerPage = () => {
       });
     }
   }, [nearestBuses]);
+
+  // Fetch route coordinates when bus is selected
+  useEffect(() => {
+    if (selectedBus && selectedBus.route?.stops && busStop) {
+      generateRouteCoordinates(selectedBus.route.stops, busStop, selectedBus.currentLocation);
+    }
+  }, [selectedBus, busStop]);
 
   const startScanner = () => {
     setShowScanner(true);
@@ -197,7 +214,6 @@ const PassengerPage = () => {
       const response = await api.get(`/passenger/nearest-buses/${stopCode}`);
       setBusStop(response.data.busStop);
       
-      // ✅ Set buses with current location
       const buses = response.data.buses || [];
       setNearestBuses(buses);
       
@@ -222,15 +238,31 @@ const PassengerPage = () => {
     }
   };
 
+  const generateRouteCoordinates = (routeStops, currentStop, busLocation) => {
+    // Create coordinates array from route stops
+    const coords = routeStops.map(stop => [
+      stop.location.latitude,
+      stop.location.longitude
+    ]);
+    
+    setRouteCoordinates(coords);
+  };
+
   const trackBus = (bus) => {
     setSelectedBus(bus);
     if (bus.currentLocation) {
       setMapCenter([bus.currentLocation.latitude, bus.currentLocation.longitude]);
     }
+    
+    // Generate route coordinates
+    if (bus.route?.stops && busStop) {
+      generateRouteCoordinates(bus.route.stops, busStop, bus.currentLocation);
+    }
   };
 
   const stopTracking = () => {
     setSelectedBus(null);
+    setRouteCoordinates([]);
     if (busStop) {
       setMapCenter([busStop.location.latitude, busStop.location.longitude]);
     }
@@ -248,7 +280,12 @@ const PassengerPage = () => {
     setNearestBuses([]);
     setSelectedBus(null);
     setMapCenter(null);
+    setRouteCoordinates([]);
     setError('');
+  };
+
+  const toggleMapType = () => {
+    setMapType(prev => prev === 'street' ? 'satellite' : 'street');
   };
 
   // Calculate distance between two points (Haversine formula)
@@ -284,6 +321,25 @@ const PassengerPage = () => {
     if (timeInMinutes < 1) return 'Arriving now!';
     if (timeInMinutes === 1) return '1 min';
     return `${timeInMinutes} min`;
+  };
+
+  // Get tile layer URL based on map type
+  const getTileLayerUrl = () => {
+    if (mapType === 'satellite') {
+      // Google Satellite
+      return 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
+    } else {
+      // OpenStreetMap
+      return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    }
+  };
+
+  const getTileLayerAttribution = () => {
+    if (mapType === 'satellite') {
+      return '&copy; <a href="https://www.google.com/maps">Google Maps</a>';
+    } else {
+      return '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+    }
   };
 
   return (
@@ -369,6 +425,25 @@ const PassengerPage = () => {
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-800">Live Bus Locations</h3>
                 <div className="flex items-center gap-2">
+                  {/* Map Type Toggle */}
+                  <button
+                    onClick={toggleMapType}
+                    className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
+                    title={mapType === 'street' ? 'Switch to Satellite View' : 'Switch to Street View'}
+                  >
+                    {mapType === 'street' ? (
+                      <>
+                        <Satellite size={18} />
+                        <span className="text-sm font-semibold">Satellite</span>
+                      </>
+                    ) : (
+                      <>
+                        <MapIconLucide size={18} />
+                        <span className="text-sm font-semibold">Street</span>
+                      </>
+                    )}
+                  </button>
+                  
                   <span className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-semibold">
                     <span className="relative flex h-3 w-3">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
@@ -385,7 +460,10 @@ const PassengerPage = () => {
                     zoom={14}
                     style={{ height: '100%', width: '100%' }}
                   >
-                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <TileLayer 
+                      url={getTileLayerUrl()} 
+                      attribution={getTileLayerAttribution()}
+                    />
                     <MapUpdater center={mapCenter} />
                     
                     {/* Bus Stop Marker */}
@@ -491,45 +569,96 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* Selected Bus Tracking */}
+        {/* Selected Bus Tracking with Route */}
         {selectedBus && selectedBus.currentLocation && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Map with Route */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-800">Tracking {selectedBus.busName}</h3>
-                <button onClick={stopTracking} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold">
-                  Stop Tracking
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Map Type Toggle */}
+                  <button
+                    onClick={toggleMapType}
+                    className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
+                    title={mapType === 'street' ? 'Switch to Satellite View' : 'Switch to Street View'}
+                  >
+                    {mapType === 'street' ? (
+                      <>
+                        <Satellite size={18} />
+                        <span className="text-sm font-semibold">Satellite</span>
+                      </>
+                    ) : (
+                      <>
+                        <MapIconLucide size={18} />
+                        <span className="text-sm font-semibold">Street</span>
+                      </>
+                    )}
+                  </button>
+                  
+                  <button onClick={stopTracking} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold">
+                    Stop Tracking
+                  </button>
+                </div>
               </div>
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 {mapCenter && (
                   <MapContainer
                     center={mapCenter}
-                    zoom={15}
+                    zoom={14}
                     style={{ height: '100%', width: '100%' }}
                   >
-                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <TileLayer 
+                      url={getTileLayerUrl()} 
+                      attribution={getTileLayerAttribution()}
+                    />
                     <MapUpdater center={mapCenter} />
                     
-                    {/* Your Stop */}
-                    <Marker position={[busStop.location.latitude, busStop.location.longitude]} icon={stopIcon}>
-                      <Popup><strong>Your Stop</strong><br/>{busStop.stopName}</Popup>
-                    </Marker>
+                    {/* Route Polyline connecting all stops */}
+                    {routeCoordinates.length > 0 && (
+                      <Polyline
+                        positions={routeCoordinates}
+                        color="#3B82F6"
+                        weight={4}
+                        opacity={0.7}
+                        dashArray="10, 10"
+                      />
+                    )}
                     
-                    {/* Bus */}
+                    {/* All Route Stops */}
+                    {selectedBus.route?.stops?.map((stop) => (
+                      <Marker
+                        key={stop._id}
+                        position={[stop.location.latitude, stop.location.longitude]}
+                        icon={stop._id === busStop._id ? stopIcon : routeStopIcon}
+                      >
+                        <Popup>
+                          <strong>{stop.stopName}</strong><br />
+                          {stop.stopCode}
+                          {stop._id === busStop._id && <><br /><span className="text-blue-600 font-semibold">📍 You are here</span></>}
+                        </Popup>
+                      </Marker>
+                    ))}
+                    
+                    {/* Bus Marker */}
                     <Marker position={[selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude]} icon={busIcon}>
-                      <Popup><strong>{selectedBus.busName}</strong><br/>{selectedBus.busNumber}</Popup>
+                      <Popup>
+                        <strong>{selectedBus.busName}</strong><br/>
+                        {selectedBus.busNumber}<br/>
+                        Speed: {selectedBus.speed?.toFixed(0) || 0} km/h
+                      </Popup>
                     </Marker>
                     
-                    {/* Line between bus and stop */}
+                    {/* Direct line from bus to your stop */}
                     <Polyline
                       positions={[
                         [selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude],
                         [busStop.location.latitude, busStop.location.longitude]
                       ]}
-                      color="blue"
-                      dashArray="10, 10"
+                      color="#EF4444"
+                      weight={2}
+                      opacity={0.6}
+                      dashArray="5, 10"
                     />
                   </MapContainer>
                 )}

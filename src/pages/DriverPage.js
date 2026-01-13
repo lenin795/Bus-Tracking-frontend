@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MapPin, Navigation, Play, Square, LogOut, AlertCircle } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { MapPin, Navigation, Play, Square, LogOut, AlertCircle, Map as MapIconLucide, Satellite } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import io from 'socket.io-client';
 import api from '../services/api';
@@ -13,6 +13,22 @@ L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
   iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
+
+// Custom bus icon
+const busIcon = new L.divIcon({
+  html: '<div style="background: #3B82F6; border-radius: 50%; width: 35px; height: 35px; display: flex; align-items: center; justify-center; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"><span style="color: white; font-size: 22px;">🚌</span></div>',
+  className: '',
+  iconSize: [35, 35],
+  iconAnchor: [17, 17]
+});
+
+// Route stop icon
+const routeStopIcon = new L.divIcon({
+  html: '<div style="background: #10B981; border: 2px solid white; border-radius: 50%; width: 16px; height: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"></div>',
+  className: '',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8]
 });
 
 // Component to update map center
@@ -35,6 +51,8 @@ const DriverPage = () => {
   const [speed, setSpeed] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [mapType, setMapType] = useState('street'); // 'street' or 'satellite'
+  const [routeCoordinates, setRouteCoordinates] = useState([]);
 
   const socketRef = useRef(null);
   const watchIdRef = useRef(null);
@@ -42,7 +60,7 @@ const DriverPage = () => {
   useEffect(() => {
     fetchBus();
     
-    // ✅ FIXED: Use production URL for Socket.IO
+    // Initialize Socket.IO
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
@@ -52,7 +70,6 @@ const DriverPage = () => {
       reconnectionAttempts: 5
     });
 
-    // Socket event listeners
     socketRef.current.on('connect', () => {
       console.log('✅ Socket connected:', socketRef.current.id);
     });
@@ -77,6 +94,17 @@ const DriverPage = () => {
     };
     // eslint-disable-next-line
   }, []);
+
+  // Generate route coordinates when bus is loaded
+  useEffect(() => {
+    if (bus?.route?.stops) {
+      const coords = bus.route.stops.map(stop => [
+        stop.location.latitude,
+        stop.location.longitude
+      ]);
+      setRouteCoordinates(coords);
+    }
+  }, [bus]);
 
   const fetchBus = async () => {
     try {
@@ -141,7 +169,7 @@ const DriverPage = () => {
         const speedKmh = gpsSpeed ? (gpsSpeed * 3.6) : 0;
         setSpeed(speedKmh.toFixed(1));
 
-        // Emit to Socket.IO for real-time tracking
+        // Emit to Socket.IO
         socketRef.current.emit('driver:location-update', {
           busId: bus._id,
           latitude,
@@ -184,6 +212,26 @@ const DriverPage = () => {
     }
     
     setIsSharing(false);
+  };
+
+  const toggleMapType = () => {
+    setMapType(prev => prev === 'street' ? 'satellite' : 'street');
+  };
+
+  const getTileLayerUrl = () => {
+    if (mapType === 'satellite') {
+      return 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
+    } else {
+      return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    }
+  };
+
+  const getTileLayerAttribution = () => {
+    if (mapType === 'satellite') {
+      return '&copy; <a href="https://www.google.com/maps">Google Maps</a>';
+    } else {
+      return '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+    }
   };
 
   if (loading) {
@@ -250,10 +298,29 @@ const DriverPage = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Map */}
           <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-semibold mb-4 flex items-center">
-              <MapPin className="mr-2 text-blue-600" size={24} />
-              Live Location
-            </h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold flex items-center">
+                <MapPin className="mr-2 text-blue-600" size={24} />
+                Live Location
+              </h2>
+              <button
+                onClick={toggleMapType}
+                className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
+                title={mapType === 'street' ? 'Switch to Satellite View' : 'Switch to Street View'}
+              >
+                {mapType === 'street' ? (
+                  <>
+                    <Satellite size={18} />
+                    <span className="text-sm font-semibold">Satellite</span>
+                  </>
+                ) : (
+                  <>
+                    <MapIconLucide size={18} />
+                    <span className="text-sm font-semibold">Street</span>
+                  </>
+                )}
+              </button>
+            </div>
             {location ? (
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 <MapContainer
@@ -262,15 +329,44 @@ const DriverPage = () => {
                   style={{ height: '100%', width: '100%' }}
                 >
                   <TileLayer
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url={getTileLayerUrl()}
+                    attribution={getTileLayerAttribution()}
                   />
-                  <Marker position={[location.latitude, location.longitude]}>
+                  
+                  {/* Route Line */}
+                  {routeCoordinates.length > 0 && (
+                    <Polyline
+                      positions={routeCoordinates}
+                      color="#3B82F6"
+                      weight={4}
+                      opacity={0.6}
+                      dashArray="10, 10"
+                    />
+                  )}
+                  
+                  {/* Route Stops */}
+                  {bus.route?.stops?.map((stop) => (
+                    <Marker
+                      key={stop._id}
+                      position={[stop.location.latitude, stop.location.longitude]}
+                      icon={routeStopIcon}
+                    >
+                      <Popup>
+                        <strong>{stop.stopName}</strong><br />
+                        {stop.stopCode}
+                      </Popup>
+                    </Marker>
+                  ))}
+                  
+                  {/* Current Bus Position */}
+                  <Marker position={[location.latitude, location.longitude]} icon={busIcon}>
                     <Popup>
                       <strong>{bus.busName}</strong><br />
-                      Speed: {speed} km/h
+                      Speed: {speed} km/h<br />
+                      Status: {isSharing ? 'Live Broadcasting' : 'Offline'}
                     </Popup>
                   </Marker>
+                  
                   <ChangeMapView center={[location.latitude, location.longitude]} />
                 </MapContainer>
               </div>
@@ -339,11 +435,11 @@ const DriverPage = () => {
                 <h2 className="text-xl font-semibold mb-4">Route Stops</h2>
                 <div className="space-y-2 max-h-96 overflow-y-auto">
                   {bus.route.stops.map((stop, index) => (
-                    <div key={stop._id} className="flex items-center p-3 bg-gray-50 rounded-lg">
+                    <div key={stop._id} className="flex items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
                       <div className="bg-blue-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-semibold mr-3 text-sm">
                         {index + 1}
                       </div>
-                      <div>
+                      <div className="flex-1">
                         <p className="font-semibold">{stop.stopName}</p>
                         <p className="text-xs text-gray-600">{stop.stopCode}</p>
                       </div>
