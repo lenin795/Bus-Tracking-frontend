@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet'
 import L from 'leaflet';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import io from 'socket.io-client';
-import axios from 'axios';
+import api from '../services/api'; // ✅ Use the api service instead of axios
 import 'leaflet/dist/leaflet.css';
 
 // Fix Leaflet icons
@@ -45,7 +45,16 @@ const PassengerPage = () => {
   const scannerRef = useRef(null);
 
   useEffect(() => {
-    socketRef.current = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000');
+    // ✅ FIXED: Use production URL for Socket.IO
+    const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+    socketRef.current = io(SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      withCredentials: true
+    });
+
+    socketRef.current.on('connect', () => {
+      console.log('✅ Socket connected:', socketRef.current.id);
+    });
 
     socketRef.current.on('bus:location-update', (data) => {
       if (selectedBus && data.busId === selectedBus._id) {
@@ -132,8 +141,8 @@ const PassengerPage = () => {
     setLoading(true);
     setError('');
     try {
-      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
-      const response = await axios.get(`${API_URL}/passenger/nearest-buses/${stopCode}`);
+      // ✅ FIXED: Use api service which already has /api/ prefix
+      const response = await api.get(`/passenger/nearest-buses/${stopCode}`);
       setBusStop(response.data.busStop);
       setNearestBuses(response.data.buses);
       
@@ -142,6 +151,7 @@ const PassengerPage = () => {
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch buses');
+      console.error('Fetch nearest buses error:', err);
     } finally {
       setLoading(false);
     }
@@ -204,8 +214,16 @@ const PassengerPage = () => {
           </div>
         )}
 
+        {/* Loading State */}
+        {loading && (
+          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
+            <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-gray-600 font-semibold">Loading bus information...</p>
+          </div>
+        )}
+
         {/* Initial Scan Button */}
-        {!busStop && !showScanner && !selectedBus && (
+        {!busStop && !showScanner && !selectedBus && !loading && (
           <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
             <div className="inline-flex items-center justify-center w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full mb-6 shadow-lg">
               <QrCode className="text-white" size={48} />
@@ -240,7 +258,7 @@ const PassengerPage = () => {
         )}
 
         {/* Map and Bus List */}
-        {busStop && !selectedBus && nearestBuses.length > 0 && (
+        {busStop && !selectedBus && nearestBuses.length > 0 && !loading && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Map */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
@@ -265,7 +283,7 @@ const PassengerPage = () => {
                   </Marker>
                   
                   {/* Bus Markers */}
-                  {nearestBuses.map(bus => (
+                  {nearestBuses.map(bus => bus.currentLocation && (
                     <Marker
                       key={bus._id}
                       position={[bus.currentLocation.latitude, bus.currentLocation.longitude]}
@@ -320,6 +338,19 @@ const PassengerPage = () => {
           </div>
         )}
 
+        {/* No Buses Found */}
+        {busStop && nearestBuses.length === 0 && !loading && (
+          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
+            <BusIcon className="mx-auto text-gray-400 mb-4" size={64} />
+            <h3 className="text-2xl font-bold text-gray-800 mb-2">No Active Buses</h3>
+            <p className="text-gray-600 mb-4">There are currently no buses active on this route.</p>
+            <p className="text-sm text-gray-500">Stop: {busStop.stopName} ({busStop.stopCode})</p>
+            <button onClick={resetView} className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold">
+              Scan Another Stop
+            </button>
+          </div>
+        )}
+
         {/* Selected Bus Tracking */}
         {selectedBus && busLocation && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -327,7 +358,7 @@ const PassengerPage = () => {
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-800">Tracking {selectedBus.busName}</h3>
-                <button onClick={stopTracking} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm">
+                <button onClick={stopTracking} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold">
                   Stop Tracking
                 </button>
               </div>
@@ -382,7 +413,7 @@ const PassengerPage = () => {
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h3 className="text-xl font-bold text-gray-800 mb-4">Route Stops</h3>
               <div className="space-y-3 max-h-96 overflow-y-auto">
-                {selectedBus.route?.stops.map((stop, index) => (
+                {selectedBus.route?.stops?.map((stop, index) => (
                   <div 
                     key={stop._id} 
                     className={`flex items-center p-3 rounded-xl ${
