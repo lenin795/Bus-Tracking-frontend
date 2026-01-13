@@ -1,13 +1,14 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL|| 'http://localhost:5000';
+// Add /api to the base URL
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 const api = axios.create({
-  baseURL: `${API_URL}/api`,
+  baseURL: `${API_URL}/api`, // ✅ FIXED: Added /api/ here
   headers: {
     'Content-Type': 'application/json'
   },
-  withCredentials: true 
+  withCredentials: true // Add this for CORS with credentials
 });
 
 // Add token to requests

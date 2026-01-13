@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2 } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import io from 'socket.io-client';
-import api from '../services/api'; // ✅ Use the api service instead of axios
+import api from '../services/api';
 import 'leaflet/dist/leaflet.css';
 
 // Fix Leaflet icons
@@ -31,52 +31,96 @@ const stopIcon = new L.divIcon({
   iconAnchor: [12, 12]
 });
 
+// Component to update map view dynamically
+function MapUpdater({ center }) {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.setView(center, map.getZoom());
+    }
+  }, [center, map]);
+  return null;
+}
+
 const PassengerPage = () => {
   const [searchParams] = useSearchParams();
   const [showScanner, setShowScanner] = useState(false);
   const [busStop, setBusStop] = useState(null);
   const [nearestBuses, setNearestBuses] = useState([]);
   const [selectedBus, setSelectedBus] = useState(null);
-  const [busLocation, setBusLocation] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [mapCenter, setMapCenter] = useState(null);
   
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
 
   useEffect(() => {
-    // ✅ FIXED: Use production URL for Socket.IO
+    // ✅ Initialize Socket.IO connection
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
-      withCredentials: true
+      withCredentials: true,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5
     });
 
     socketRef.current.on('connect', () => {
       console.log('✅ Socket connected:', socketRef.current.id);
+      
+      // ✅ Re-subscribe to all buses when reconnected
+      nearestBuses.forEach(bus => {
+        socketRef.current.emit('passenger:track-bus', { busId: bus._id });
+        console.log('📡 Subscribed to bus:', bus.busNumber);
+      });
     });
 
+    socketRef.current.on('disconnect', (reason) => {
+      console.log('❌ Socket disconnected:', reason);
+    });
+
+    socketRef.current.on('connect_error', (error) => {
+      console.error('🔴 Socket connection error:', error.message);
+    });
+
+    // ✅ Listen for real-time bus location updates
     socketRef.current.on('bus:location-update', (data) => {
-      if (selectedBus && data.busId === selectedBus._id) {
-        setBusLocation({
-          latitude: data.location.latitude,
-          longitude: data.location.longitude,
-          speed: data.speed,
-          timestamp: data.timestamp
-        });
-        
-        // Update bus in nearestBuses array
-        setNearestBuses(prev => prev.map(bus => 
-          bus._id === data.busId 
-            ? {...bus, currentLocation: data.location}
-            : bus
-        ));
-      }
+      console.log('📍 Bus location update:', data);
+      
+      // Update the bus in nearestBuses array with new location
+      setNearestBuses(prev => prev.map(bus => {
+        if (bus._id === data.busId) {
+          const updatedBus = {
+            ...bus,
+            currentLocation: {
+              latitude: data.location.latitude,
+              longitude: data.location.longitude
+            },
+            speed: data.speed,
+            lastUpdate: new Date()
+          };
+          
+          // If this is the selected bus, update map center
+          if (selectedBus && selectedBus._id === data.busId) {
+            setMapCenter([data.location.latitude, data.location.longitude]);
+          }
+          
+          return updatedBus;
+        }
+        return bus;
+      }));
     });
 
+    // ✅ Handle bus going offline
     socketRef.current.on('bus:offline', (data) => {
-      if (selectedBus && data.busId === selectedBus._id) {
-        setError('Bus has gone offline');
+      console.log('🔴 Bus offline:', data.busId);
+      
+      setNearestBuses(prev => prev.filter(bus => bus._id !== data.busId));
+      
+      if (selectedBus && selectedBus._id === data.busId) {
+        setError('Selected bus has gone offline');
+        setSelectedBus(null);
       }
     });
 
@@ -94,7 +138,17 @@ const PassengerPage = () => {
         scannerRef.current.clear().catch(console.error);
       }
     };
-  }, [selectedBus, searchParams]);
+  }, []); // Only run once on mount
+
+  // ✅ Subscribe to buses when nearestBuses changes
+  useEffect(() => {
+    if (socketRef.current && socketRef.current.connected && nearestBuses.length > 0) {
+      nearestBuses.forEach(bus => {
+        socketRef.current.emit('passenger:track-bus', { busId: bus._id });
+        console.log('📡 Tracking bus:', bus.busNumber, bus._id);
+      });
+    }
+  }, [nearestBuses]);
 
   const startScanner = () => {
     setShowScanner(true);
@@ -122,7 +176,6 @@ const PassengerPage = () => {
   const onScanSuccess = async (decodedText) => {
     try {
       stopScanner();
-      // Check if it's a URL with stop parameter
       const url = new URL(decodedText);
       const stopCode = url.searchParams.get('stop');
       if (stopCode) {
@@ -141,13 +194,25 @@ const PassengerPage = () => {
     setLoading(true);
     setError('');
     try {
-      // ✅ FIXED: Use api service which already has /api/ prefix
       const response = await api.get(`/passenger/nearest-buses/${stopCode}`);
       setBusStop(response.data.busStop);
-      setNearestBuses(response.data.buses);
       
-      if (response.data.buses.length === 0) {
+      // ✅ Set buses with current location
+      const buses = response.data.buses || [];
+      setNearestBuses(buses);
+      
+      // Set map center to bus stop
+      if (response.data.busStop) {
+        setMapCenter([
+          response.data.busStop.location.latitude,
+          response.data.busStop.location.longitude
+        ]);
+      }
+      
+      if (buses.length === 0) {
         setError('No active buses found on this route');
+      } else {
+        console.log(`✅ Found ${buses.length} buses`);
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch buses');
@@ -159,27 +224,66 @@ const PassengerPage = () => {
 
   const trackBus = (bus) => {
     setSelectedBus(bus);
-    setBusLocation({
-      latitude: bus.currentLocation.latitude,
-      longitude: bus.currentLocation.longitude
-    });
-    socketRef.current.emit('passenger:track-bus', { busId: bus._id });
+    if (bus.currentLocation) {
+      setMapCenter([bus.currentLocation.latitude, bus.currentLocation.longitude]);
+    }
   };
 
   const stopTracking = () => {
-    if (selectedBus) {
-      socketRef.current.emit('passenger:untrack-bus', { busId: selectedBus._id });
-    }
     setSelectedBus(null);
-    setBusLocation(null);
+    if (busStop) {
+      setMapCenter([busStop.location.latitude, busStop.location.longitude]);
+    }
   };
 
   const resetView = () => {
+    // Unsubscribe from all buses
+    if (socketRef.current) {
+      nearestBuses.forEach(bus => {
+        socketRef.current.emit('passenger:untrack-bus', { busId: bus._id });
+      });
+    }
+    
     setBusStop(null);
     setNearestBuses([]);
     setSelectedBus(null);
-    setBusLocation(null);
+    setMapCenter(null);
     setError('');
+  };
+
+  // Calculate distance between two points (Haversine formula)
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return (R * c).toFixed(2);
+  };
+
+  // Calculate ETA
+  const calculateETA = (bus) => {
+    if (!bus.currentLocation || !busStop) return 'Calculating...';
+    
+    const distance = parseFloat(calculateDistance(
+      bus.currentLocation.latitude,
+      bus.currentLocation.longitude,
+      busStop.location.latitude,
+      busStop.location.longitude
+    ));
+
+    const speed = bus.speed || 30; // Default 30 km/h
+    if (speed < 5) return 'Bus stopped';
+    
+    const timeInHours = distance / speed;
+    const timeInMinutes = Math.round(timeInHours * 60);
+
+    if (timeInMinutes < 1) return 'Arriving now!';
+    if (timeInMinutes === 1) return '1 min';
+    return `${timeInMinutes} min`;
   };
 
   return (
@@ -262,42 +366,62 @@ const PassengerPage = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Map */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Live Bus Locations</h3>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-gray-800">Live Bus Locations</h3>
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-semibold">
+                    <span className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                    </span>
+                    Live
+                  </span>
+                </div>
+              </div>
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
-                <MapContainer
-                  center={[busStop.location.latitude, busStop.location.longitude]}
-                  zoom={14}
-                  style={{ height: '100%', width: '100%' }}
-                >
-                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  
-                  {/* Bus Stop Marker */}
-                  <Marker
-                    position={[busStop.location.latitude, busStop.location.longitude]}
-                    icon={stopIcon}
+                {mapCenter && (
+                  <MapContainer
+                    center={mapCenter}
+                    zoom={14}
+                    style={{ height: '100%', width: '100%' }}
                   >
-                    <Popup>
-                      <strong>{busStop.stopName}</strong><br />
-                      Your Location
-                    </Popup>
-                  </Marker>
-                  
-                  {/* Bus Markers */}
-                  {nearestBuses.map(bus => bus.currentLocation && (
+                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <MapUpdater center={mapCenter} />
+                    
+                    {/* Bus Stop Marker */}
                     <Marker
-                      key={bus._id}
-                      position={[bus.currentLocation.latitude, bus.currentLocation.longitude]}
-                      icon={busIcon}
+                      position={[busStop.location.latitude, busStop.location.longitude]}
+                      icon={stopIcon}
                     >
                       <Popup>
-                        <strong>{bus.busName}</strong><br />
-                        {bus.busNumber}<br />
-                        {bus.distanceFromStop} km away<br />
-                        ETA: ~{bus.estimatedArrival} min
+                        <strong>{busStop.stopName}</strong><br />
+                        Your Location
                       </Popup>
                     </Marker>
-                  ))}
-                </MapContainer>
+                    
+                    {/* Bus Markers */}
+                    {nearestBuses.map(bus => bus.currentLocation && (
+                      <Marker
+                        key={bus._id}
+                        position={[bus.currentLocation.latitude, bus.currentLocation.longitude]}
+                        icon={busIcon}
+                      >
+                        <Popup>
+                          <strong>{bus.busName}</strong><br />
+                          {bus.busNumber}<br />
+                          {calculateDistance(
+                            bus.currentLocation.latitude,
+                            bus.currentLocation.longitude,
+                            busStop.location.latitude,
+                            busStop.location.longitude
+                          )} km away<br />
+                          ETA: {calculateETA(bus)}<br />
+                          Speed: {bus.speed ? `${bus.speed.toFixed(0)} km/h` : 'N/A'}
+                        </Popup>
+                      </Marker>
+                    ))}
+                  </MapContainer>
+                )}
               </div>
             </div>
 
@@ -307,32 +431,48 @@ const PassengerPage = () => {
                 Nearby Buses ({nearestBuses.length})
               </h3>
               <div className="space-y-3 max-h-96 overflow-y-auto">
-                {nearestBuses.map((bus) => (
-                  <div
-                    key={bus._id}
-                    className="border-2 border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition cursor-pointer"
-                    onClick={() => trackBus(bus)}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h4 className="font-bold text-lg">{bus.busName}</h4>
-                        <p className="text-sm text-gray-600">{bus.busNumber}</p>
+                {nearestBuses.map((bus) => {
+                  const distance = bus.currentLocation && busStop ? calculateDistance(
+                    bus.currentLocation.latitude,
+                    bus.currentLocation.longitude,
+                    busStop.location.latitude,
+                    busStop.location.longitude
+                  ) : 'N/A';
+                  
+                  const eta = calculateETA(bus);
+                  
+                  return (
+                    <div
+                      key={bus._id}
+                      className="border-2 border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition cursor-pointer"
+                      onClick={() => trackBus(bus)}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="font-bold text-lg">{bus.busName}</h4>
+                          <p className="text-sm text-gray-600">{bus.busNumber}</p>
+                        </div>
+                        <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
+                          {distance} km
+                        </div>
                       </div>
-                      <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {bus.distanceFromStop} km
+                      <div className="flex items-center justify-between pt-2 border-t">
+                        <div className="flex items-center gap-1 text-gray-700">
+                          <Clock size={16} />
+                          <span className="text-sm font-semibold">{eta}</span>
+                        </div>
+                        <button className="text-blue-600 hover:text-blue-800 font-bold text-sm">
+                          Track →
+                        </button>
                       </div>
+                      {bus.speed && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          Speed: {bus.speed.toFixed(0)} km/h
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center justify-between pt-2 border-t">
-                      <div className="flex items-center gap-1 text-gray-700">
-                        <Clock size={16} />
-                        <span className="text-sm font-semibold">~{bus.estimatedArrival} min</span>
-                      </div>
-                      <button className="text-blue-600 hover:text-blue-800 font-bold text-sm">
-                        Track →
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -352,7 +492,7 @@ const PassengerPage = () => {
         )}
 
         {/* Selected Bus Tracking */}
-        {selectedBus && busLocation && (
+        {selectedBus && selectedBus.currentLocation && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Map with Route */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
@@ -363,48 +503,58 @@ const PassengerPage = () => {
                 </button>
               </div>
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
-                <MapContainer
-                  center={[busLocation.latitude, busLocation.longitude]}
-                  zoom={15}
-                  style={{ height: '100%', width: '100%' }}
-                >
-                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  
-                  {/* Your Stop */}
-                  <Marker position={[busStop.location.latitude, busStop.location.longitude]} icon={stopIcon}>
-                    <Popup><strong>Your Stop</strong><br/>{busStop.stopName}</Popup>
-                  </Marker>
-                  
-                  {/* Bus */}
-                  <Marker position={[busLocation.latitude, busLocation.longitude]} icon={busIcon}>
-                    <Popup><strong>{selectedBus.busName}</strong><br/>{selectedBus.busNumber}</Popup>
-                  </Marker>
-                  
-                  {/* Line between bus and stop */}
-                  <Polyline
-                    positions={[
-                      [busLocation.latitude, busLocation.longitude],
-                      [busStop.location.latitude, busStop.location.longitude]
-                    ]}
-                    color="blue"
-                    dashArray="10, 10"
-                  />
-                </MapContainer>
+                {mapCenter && (
+                  <MapContainer
+                    center={mapCenter}
+                    zoom={15}
+                    style={{ height: '100%', width: '100%' }}
+                  >
+                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <MapUpdater center={mapCenter} />
+                    
+                    {/* Your Stop */}
+                    <Marker position={[busStop.location.latitude, busStop.location.longitude]} icon={stopIcon}>
+                      <Popup><strong>Your Stop</strong><br/>{busStop.stopName}</Popup>
+                    </Marker>
+                    
+                    {/* Bus */}
+                    <Marker position={[selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude]} icon={busIcon}>
+                      <Popup><strong>{selectedBus.busName}</strong><br/>{selectedBus.busNumber}</Popup>
+                    </Marker>
+                    
+                    {/* Line between bus and stop */}
+                    <Polyline
+                      positions={[
+                        [selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude],
+                        [busStop.location.latitude, busStop.location.longitude]
+                      ]}
+                      color="blue"
+                      dashArray="10, 10"
+                    />
+                  </MapContainer>
+                )}
               </div>
               
               {/* Quick Stats */}
               <div className="grid grid-cols-3 gap-4 mt-4">
                 <div className="bg-blue-50 p-4 rounded-lg text-center">
                   <p className="text-sm text-gray-600">Distance</p>
-                  <p className="text-2xl font-bold text-blue-600">{selectedBus.distanceFromStop} km</p>
+                  <p className="text-2xl font-bold text-blue-600">
+                    {calculateDistance(
+                      selectedBus.currentLocation.latitude,
+                      selectedBus.currentLocation.longitude,
+                      busStop.location.latitude,
+                      busStop.location.longitude
+                    )} km
+                  </p>
                 </div>
                 <div className="bg-green-50 p-4 rounded-lg text-center">
                   <p className="text-sm text-gray-600">ETA</p>
-                  <p className="text-2xl font-bold text-green-600">~{selectedBus.estimatedArrival} min</p>
+                  <p className="text-2xl font-bold text-green-600">{calculateETA(selectedBus)}</p>
                 </div>
                 <div className="bg-purple-50 p-4 rounded-lg text-center">
                   <p className="text-sm text-gray-600">Speed</p>
-                  <p className="text-2xl font-bold text-purple-600">{busLocation.speed?.toFixed(0) || 0} km/h</p>
+                  <p className="text-2xl font-bold text-purple-600">{selectedBus.speed?.toFixed(0) || 0} km/h</p>
                 </div>
               </div>
             </div>
@@ -441,8 +591,12 @@ const PassengerPage = () => {
               </div>
               
               <div className="mt-4 p-4 bg-green-50 border-2 border-green-200 rounded-xl">
-                <p className="text-center text-green-800 font-bold">
-                  🟢 Live tracking active
+                <p className="text-center text-green-800 font-bold flex items-center justify-center gap-2">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                  </span>
+                  Live tracking active
                 </p>
               </div>
             </div>

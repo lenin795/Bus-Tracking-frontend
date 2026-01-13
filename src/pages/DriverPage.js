@@ -38,16 +38,37 @@ const DriverPage = () => {
 
   const socketRef = useRef(null);
   const watchIdRef = useRef(null);
-  const token = localStorage.getItem('token');
 
   useEffect(() => {
     fetchBus();
     
-   // Replace with:
-   socketRef.current = io(process.env.REACT_APP_API_URL || 'http://localhost:5000', {
-     transports: ['websocket', 'polling'],
-     withCredentials: true
-   });
+    // ✅ FIXED: Use production URL for Socket.IO
+    const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+    socketRef.current = io(SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      withCredentials: true,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5
+    });
+
+    // Socket event listeners
+    socketRef.current.on('connect', () => {
+      console.log('✅ Socket connected:', socketRef.current.id);
+    });
+
+    socketRef.current.on('disconnect', (reason) => {
+      console.log('❌ Socket disconnected:', reason);
+    });
+
+    socketRef.current.on('connect_error', (error) => {
+      console.error('🔴 Socket connection error:', error.message);
+    });
+
+    socketRef.current.on('driver:sharing-started', (data) => {
+      console.log('✅ Sharing started confirmed:', data);
+    });
+    
     return () => {
       stopSharing();
       if (socketRef.current) {
@@ -108,30 +129,46 @@ const DriverPage = () => {
       driverId: user.id
     });
 
+    console.log('📍 Started sharing location for bus:', bus._id);
+
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude, speed: gpsSpeed } = position.coords;
         
         const locationData = { latitude, longitude, timestamp: new Date() };
         setLocation(locationData);
-        setSpeed(gpsSpeed ? (gpsSpeed * 3.6).toFixed(1) : 0);
+        
+        const speedKmh = gpsSpeed ? (gpsSpeed * 3.6) : 0;
+        setSpeed(speedKmh.toFixed(1));
 
+        // Emit to Socket.IO for real-time tracking
         socketRef.current.emit('driver:location-update', {
           busId: bus._id,
           latitude,
           longitude,
-          speed: gpsSpeed ? gpsSpeed * 3.6 : 0
+          speed: speedKmh,
+          heading: position.coords.heading || 0
         });
 
+        console.log('📍 Location sent:', latitude, longitude, 'Speed:', speedKmh.toFixed(1), 'km/h');
+
+        // Save to database
         api.post('/driver/save-location', {
           busId: bus._id,
           latitude,
           longitude,
-          speed: gpsSpeed ? gpsSpeed * 3.6 : 0
+          speed: speedKmh
         }).catch(console.error);
       },
-      (error) => setError('Location error: ' + error.message),
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      (error) => {
+        console.error('Location error:', error);
+        setError('Location error: ' + error.message);
+      },
+      { 
+        enableHighAccuracy: true, 
+        timeout: 5000, 
+        maximumAge: 0 
+      }
     );
   };
 
@@ -143,6 +180,7 @@ const DriverPage = () => {
     
     if (socketRef.current && bus) {
       socketRef.current.emit('driver:stop-sharing', { busId: bus._id });
+      console.log('🛑 Stopped sharing location for bus:', bus._id);
     }
     
     setIsSharing(false);
