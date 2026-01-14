@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MapPin, Navigation, Play, Square, LogOut, AlertCircle, Map as MapIconLucide, Satellite } from 'lucide-react';
+import { MapPin, Navigation, Play, Square, LogOut, AlertCircle, Map as MapIconLucide, Satellite, Route as RouteIcon } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import io from 'socket.io-client';
 import api from '../services/api';
 import 'leaflet/dist/leaflet.css';
 
-// Fix Leaflet default icon issue
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -15,7 +14,6 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-// Custom bus icon
 const busIcon = new L.divIcon({
   html: '<div style="background: #3B82F6; border-radius: 50%; width: 35px; height: 35px; display: flex; align-items: center; justify-center; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"><span style="color: white; font-size: 22px;">🚌</span></div>',
   className: '',
@@ -23,7 +21,6 @@ const busIcon = new L.divIcon({
   iconAnchor: [17, 17]
 });
 
-// Route stop icon
 const routeStopIcon = new L.divIcon({
   html: '<div style="background: #10B981; border: 2px solid white; border-radius: 50%; width: 16px; height: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"></div>',
   className: '',
@@ -31,7 +28,6 @@ const routeStopIcon = new L.divIcon({
   iconAnchor: [8, 8]
 });
 
-// Component to update map center
 function ChangeMapView({ center }) {
   const map = useMap();
   useEffect(() => {
@@ -51,8 +47,9 @@ const DriverPage = () => {
   const [speed, setSpeed] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [mapType, setMapType] = useState('street'); // 'street' or 'satellite'
+  const [mapType, setMapType] = useState('street');
   const [routeCoordinates, setRouteCoordinates] = useState([]);
+  const [totalRouteDistance, setTotalRouteDistance] = useState(null);
 
   const socketRef = useRef(null);
   const watchIdRef = useRef(null);
@@ -60,7 +57,6 @@ const DriverPage = () => {
   useEffect(() => {
     fetchBus();
     
-    // Initialize Socket.IO
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
@@ -92,19 +88,43 @@ const DriverPage = () => {
         socketRef.current.disconnect();
       }
     };
-    // eslint-disable-next-line
   }, []);
 
-  // Generate route coordinates when bus is loaded
   useEffect(() => {
     if (bus?.route?.stops) {
-      const coords = bus.route.stops.map(stop => [
-        stop.location.latitude,
-        stop.location.longitude
-      ]);
-      setRouteCoordinates(coords);
+      fetchCompleteRouteWithRoads(bus.route.stops);
     }
   }, [bus]);
+
+  const fetchCompleteRouteWithRoads = async (stops) => {
+    try {
+      if (stops.length < 2) return;
+      
+      const coordinates = stops.map(stop => 
+        `${stop.location.longitude},${stop.location.latitude}`
+      ).join(';');
+      
+      const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const coords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+        setRouteCoordinates(coords);
+        setTotalRouteDistance((route.distance / 1000).toFixed(2));
+        console.log('✅ Complete route fetched:', coords.length, 'points');
+      } else {
+        const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+        setRouteCoordinates(coords);
+      }
+    } catch (error) {
+      console.error('Error fetching complete route:', error);
+      const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+      setRouteCoordinates(coords);
+    }
+  };
 
   const fetchBus = async () => {
     try {
@@ -169,7 +189,6 @@ const DriverPage = () => {
         const speedKmh = gpsSpeed ? (gpsSpeed * 3.6) : 0;
         setSpeed(speedKmh.toFixed(1));
 
-        // Emit to Socket.IO
         socketRef.current.emit('driver:location-update', {
           busId: bus._id,
           latitude,
@@ -180,7 +199,6 @@ const DriverPage = () => {
 
         console.log('📍 Location sent:', latitude, longitude, 'Speed:', speedKmh.toFixed(1), 'km/h');
 
-        // Save to database
         api.post('/driver/save-location', {
           busId: bus._id,
           latitude,
@@ -258,7 +276,6 @@ const DriverPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* Header */}
       <div className="bg-white shadow-md">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
           <div>
@@ -273,7 +290,6 @@ const DriverPage = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* Error Message */}
         {error && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-6 flex items-center">
             <AlertCircle className="mr-2" size={20} />
@@ -281,13 +297,18 @@ const DriverPage = () => {
           </div>
         )}
 
-        {/* Bus Info */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <div className="flex justify-between items-start">
             <div>
               <h2 className="text-xl font-semibold text-gray-800">{bus.busName}</h2>
               <p className="text-gray-600">Bus Number: {bus.busNumber}</p>
               <p className="text-gray-600">Route: {bus.route?.routeName}</p>
+              {totalRouteDistance && (
+                <p className="text-sm text-blue-600 mt-1">
+                  <RouteIcon size={14} className="inline mr-1" />
+                  Total Route Distance: {totalRouteDistance} km (via roads)
+                </p>
+              )}
             </div>
             <div className={`px-4 py-2 rounded-full text-white font-semibold ${isSharing ? 'bg-green-500' : 'bg-gray-400'}`}>
               {isSharing ? '● Live' : 'Offline'}
@@ -296,7 +317,6 @@ const DriverPage = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Map */}
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-semibold flex items-center">
@@ -333,26 +353,25 @@ const DriverPage = () => {
                     attribution={getTileLayerAttribution()}
                   />
                   
-                  {/* Route Line */}
+                  {/* Road-based Route Line */}
                   {routeCoordinates.length > 0 && (
                     <Polyline
                       positions={routeCoordinates}
                       color="#3B82F6"
-                      weight={4}
-                      opacity={0.6}
-                      dashArray="10, 10"
+                      weight={5}
+                      opacity={0.7}
                     />
                   )}
                   
                   {/* Route Stops */}
-                  {bus.route?.stops?.map((stop) => (
+                  {bus.route?.stops?.map((stop, index) => (
                     <Marker
                       key={stop._id}
                       position={[stop.location.latitude, stop.location.longitude]}
                       icon={routeStopIcon}
                     >
                       <Popup>
-                        <strong>{stop.stopName}</strong><br />
+                        <strong>Stop {index + 1}: {stop.stopName}</strong><br />
                         {stop.stopCode}
                       </Popup>
                     </Marker>
@@ -396,11 +415,30 @@ const DriverPage = () => {
                 </div>
               </div>
             )}
+            
+            {/* Legend */}
+            {routeCoordinates.length > 0 && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs font-semibold text-gray-700 mb-2">Map Legend:</p>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-1 bg-blue-500"></div>
+                    <span>Road Route ({totalRouteDistance || '?'} km)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+                    <span>Your Bus</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span>Stops</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Controls */}
           <div className="space-y-6">
-            {/* Trip Controls */}
             <div className="bg-white rounded-lg shadow-md p-6">
               <h2 className="text-xl font-semibold mb-4">Trip Controls</h2>
               
@@ -429,10 +467,9 @@ const DriverPage = () => {
               )}
             </div>
 
-            {/* Route Stops */}
             {bus.route?.stops && (
               <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-xl font-semibold mb-4">Route Stops</h2>
+                <h2 className="text-xl font-semibold mb-4">Route Stops ({bus.route.stops.length})</h2>
                 <div className="space-y-2 max-h-96 overflow-y-auto">
                   {bus.route.stops.map((stop, index) => (
                     <div key={stop._id} className="flex items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">

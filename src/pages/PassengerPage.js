@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite } from 'lucide-react';
+import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite, Route as RouteIcon } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Html5QrcodeScanner } from 'html5-qrcode';
@@ -31,7 +31,6 @@ const stopIcon = new L.divIcon({
   iconAnchor: [12, 12]
 });
 
-// Small stop marker for route stops
 const routeStopIcon = new L.divIcon({
   html: '<div style="background: #10B981; border: 2px solid white; border-radius: 50%; width: 16px; height: 16px;"></div>',
   className: '',
@@ -59,14 +58,16 @@ const PassengerPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [mapCenter, setMapCenter] = useState(null);
-  const [mapType, setMapType] = useState('street'); // 'street' or 'satellite'
-  const [routeCoordinates, setRouteCoordinates] = useState([]); // For route polyline
+  const [mapType, setMapType] = useState('street');
+  const [routeCoordinates, setRouteCoordinates] = useState([]); // Blue line - complete route
+  const [busToStopRoute, setBusToStopRoute] = useState([]); // Green line - bus to your stop (road-based)
+  const [routeDistance, setRouteDistance] = useState(null); // Actual road distance
+  const [loadingRoute, setLoadingRoute] = useState(false);
   
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
 
   useEffect(() => {
-    // Initialize Socket.IO connection
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
@@ -78,11 +79,8 @@ const PassengerPage = () => {
 
     socketRef.current.on('connect', () => {
       console.log('✅ Socket connected:', socketRef.current.id);
-      
-      // Re-subscribe to all buses when reconnected
       nearestBuses.forEach(bus => {
         socketRef.current.emit('passenger:track-bus', { busId: bus._id });
-        console.log('📡 Subscribed to bus:', bus.busNumber);
       });
     });
 
@@ -94,11 +92,9 @@ const PassengerPage = () => {
       console.error('🔴 Socket connection error:', error.message);
     });
 
-    // Listen for real-time bus location updates
     socketRef.current.on('bus:location-update', (data) => {
       console.log('📍 Bus location update:', data);
       
-      // Update the bus in nearestBuses array with new location
       setNearestBuses(prev => prev.map(bus => {
         if (bus._id === data.busId) {
           const updatedBus = {
@@ -111,9 +107,16 @@ const PassengerPage = () => {
             lastUpdate: new Date()
           };
           
-          // If this is the selected bus, update map center
-          if (selectedBus && selectedBus._id === data.busId) {
+          // If this is the selected bus, update route and map
+          if (selectedBus && selectedBus._id === data.busId && busStop) {
             setMapCenter([data.location.latitude, data.location.longitude]);
+            // Fetch new road route
+            fetchRoadRoute(
+              data.location.latitude,
+              data.location.longitude,
+              busStop.location.latitude,
+              busStop.location.longitude
+            );
           }
           
           return updatedBus;
@@ -122,61 +125,111 @@ const PassengerPage = () => {
       }));
     });
 
-    // Handle bus going offline
     socketRef.current.on('bus:offline', (data) => {
       console.log('🔴 Bus offline:', data.busId);
-      
       setNearestBuses(prev => prev.filter(bus => bus._id !== data.busId));
-      
       if (selectedBus && selectedBus._id === data.busId) {
         setError('Selected bus has gone offline');
         setSelectedBus(null);
       }
     });
 
-    // Check if stop code in URL
     const stopCode = searchParams.get('stop');
     if (stopCode) {
       fetchNearestBuses(stopCode);
     }
 
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-      if (scannerRef.current) {
-        scannerRef.current.clear().catch(console.error);
-      }
+      if (socketRef.current) socketRef.current.disconnect();
+      if (scannerRef.current) scannerRef.current.clear().catch(console.error);
     };
   }, []);
 
-  // Subscribe to buses when nearestBuses changes
   useEffect(() => {
     if (socketRef.current && socketRef.current.connected && nearestBuses.length > 0) {
       nearestBuses.forEach(bus => {
         socketRef.current.emit('passenger:track-bus', { busId: bus._id });
-        console.log('📡 Tracking bus:', bus.busNumber, bus._id);
       });
     }
   }, [nearestBuses]);
 
-  // Fetch route coordinates when bus is selected
+  // Fetch road route when bus is selected
   useEffect(() => {
-    if (selectedBus && selectedBus.route?.stops && busStop) {
-      generateRouteCoordinates(selectedBus.route.stops, busStop, selectedBus.currentLocation);
+    if (selectedBus?.currentLocation && busStop) {
+      fetchRoadRoute(
+        selectedBus.currentLocation.latitude,
+        selectedBus.currentLocation.longitude,
+        busStop.location.latitude,
+        busStop.location.longitude
+      );
+      
+      if (selectedBus.route?.stops) {
+        fetchCompleteRouteWithRoads(selectedBus.route.stops);
+      }
     }
   }, [selectedBus, busStop]);
+
+  // Fetch road-based route using OSRM
+  const fetchRoadRoute = async (startLat, startLon, endLat, endLon) => {
+    setLoadingRoute(true);
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const coordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+        setBusToStopRoute(coordinates);
+        setRouteDistance((route.distance / 1000).toFixed(2));
+        console.log('✅ Road route fetched:', coordinates.length, 'points');
+      } else {
+        setBusToStopRoute([[startLat, startLon], [endLat, endLon]]);
+      }
+    } catch (error) {
+      console.error('Error fetching route:', error);
+      setBusToStopRoute([[startLat, startLon], [endLat, endLon]]);
+    } finally {
+      setLoadingRoute(false);
+    }
+  };
+
+  // Fetch complete route with roads between all stops
+  const fetchCompleteRouteWithRoads = async (stops) => {
+    try {
+      if (stops.length < 2) return;
+      
+      const coordinates = stops.map(stop => 
+        `${stop.location.longitude},${stop.location.latitude}`
+      ).join(';');
+      
+      const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const coords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+        setRouteCoordinates(coords);
+        console.log('✅ Complete route fetched:', coords.length, 'points');
+      } else {
+        const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+        setRouteCoordinates(coords);
+      }
+    } catch (error) {
+      console.error('Error fetching complete route:', error);
+      const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+      setRouteCoordinates(coords);
+    }
+  };
 
   const startScanner = () => {
     setShowScanner(true);
     setError('');
-    
     setTimeout(() => {
-      const scanner = new Html5QrcodeScanner(
-        'qr-reader',
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        false
-      );
+      const scanner = new Html5QrcodeScanner('qr-reader', { fps: 10, qrbox: { width: 250, height: 250 } }, false);
       scanner.render(onScanSuccess, onScanError);
       scannerRef.current = scanner;
     }, 100);
@@ -195,17 +248,13 @@ const PassengerPage = () => {
       stopScanner();
       const url = new URL(decodedText);
       const stopCode = url.searchParams.get('stop');
-      if (stopCode) {
-        await fetchNearestBuses(stopCode);
-      }
+      if (stopCode) await fetchNearestBuses(stopCode);
     } catch (err) {
       setError('Invalid QR code. Please scan a valid bus stop QR code.');
     }
   };
 
-  const onScanError = (err) => {
-    // Ignore continuous scan errors
-  };
+  const onScanError = () => {};
 
   const fetchNearestBuses = async (stopCode) => {
     setLoading(true);
@@ -217,35 +266,18 @@ const PassengerPage = () => {
       const buses = response.data.buses || [];
       setNearestBuses(buses);
       
-      // Set map center to bus stop
       if (response.data.busStop) {
-        setMapCenter([
-          response.data.busStop.location.latitude,
-          response.data.busStop.location.longitude
-        ]);
+        setMapCenter([response.data.busStop.location.latitude, response.data.busStop.location.longitude]);
       }
       
       if (buses.length === 0) {
         setError('No active buses found on this route');
-      } else {
-        console.log(`✅ Found ${buses.length} buses`);
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch buses');
-      console.error('Fetch nearest buses error:', err);
     } finally {
       setLoading(false);
     }
-  };
-
-  const generateRouteCoordinates = (routeStops, currentStop, busLocation) => {
-    // Create coordinates array from route stops
-    const coords = routeStops.map(stop => [
-      stop.location.latitude,
-      stop.location.longitude
-    ]);
-    
-    setRouteCoordinates(coords);
   };
 
   const trackBus = (bus) => {
@@ -253,34 +285,30 @@ const PassengerPage = () => {
     if (bus.currentLocation) {
       setMapCenter([bus.currentLocation.latitude, bus.currentLocation.longitude]);
     }
-    
-    // Generate route coordinates
-    if (bus.route?.stops && busStop) {
-      generateRouteCoordinates(bus.route.stops, busStop, bus.currentLocation);
-    }
   };
 
   const stopTracking = () => {
     setSelectedBus(null);
     setRouteCoordinates([]);
+    setBusToStopRoute([]);
+    setRouteDistance(null);
     if (busStop) {
       setMapCenter([busStop.location.latitude, busStop.location.longitude]);
     }
   };
 
   const resetView = () => {
-    // Unsubscribe from all buses
     if (socketRef.current) {
       nearestBuses.forEach(bus => {
         socketRef.current.emit('passenger:untrack-bus', { busId: bus._id });
       });
     }
-    
     setBusStop(null);
     setNearestBuses([]);
     setSelectedBus(null);
     setMapCenter(null);
     setRouteCoordinates([]);
+    setBusToStopRoute([]);
     setError('');
   };
 
@@ -288,9 +316,8 @@ const PassengerPage = () => {
     setMapType(prev => prev === 'street' ? 'satellite' : 'street');
   };
 
-  // Calculate distance between two points (Haversine formula)
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371; // Earth's radius in km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = 
@@ -301,50 +328,41 @@ const PassengerPage = () => {
     return (R * c).toFixed(2);
   };
 
-  // Calculate ETA
   const calculateETA = (bus) => {
     if (!bus.currentLocation || !busStop) return 'Calculating...';
     
-    const distance = parseFloat(calculateDistance(
+    // Use actual road distance if available
+    const distance = routeDistance ? parseFloat(routeDistance) : parseFloat(calculateDistance(
       bus.currentLocation.latitude,
       bus.currentLocation.longitude,
       busStop.location.latitude,
       busStop.location.longitude
     ));
 
-    const speed = bus.speed || 30; // Default 30 km/h
+    const speed = bus.speed || 30;
     if (speed < 5) return 'Bus stopped';
     
-    const timeInHours = distance / speed;
-    const timeInMinutes = Math.round(timeInHours * 60);
+    const timeInMinutes = Math.round((distance / speed) * 60);
 
     if (timeInMinutes < 1) return 'Arriving now!';
     if (timeInMinutes === 1) return '1 min';
     return `${timeInMinutes} min`;
   };
 
-  // Get tile layer URL based on map type
   const getTileLayerUrl = () => {
-    if (mapType === 'satellite') {
-      // Google Satellite
-      return 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
-    } else {
-      // OpenStreetMap
-      return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-    }
+    return mapType === 'satellite' 
+      ? 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
+      : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   };
 
   const getTileLayerAttribution = () => {
-    if (mapType === 'satellite') {
-      return '&copy; <a href="https://www.google.com/maps">Google Maps</a>';
-    } else {
-      return '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-    }
+    return mapType === 'satellite'
+      ? '&copy; <a href="https://www.google.com/maps">Google Maps</a>'
+      : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Header */}
       <div className="bg-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
@@ -354,7 +372,7 @@ const PassengerPage = () => {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-gray-800">Bus Tracker</h1>
-                <p className="text-sm text-gray-600">Track your bus in real-time</p>
+                <p className="text-sm text-gray-600">Track your bus in real-time with road routing</p>
               </div>
             </div>
             {(busStop || selectedBus) && (
@@ -374,7 +392,6 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* Loading State */}
         {loading && (
           <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div>
@@ -382,7 +399,6 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* Initial Scan Button */}
         {!busStop && !showScanner && !selectedBus && !loading && (
           <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
             <div className="inline-flex items-center justify-center w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full mb-6 shadow-lg">
@@ -399,7 +415,6 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* QR Scanner */}
         {showScanner && (
           <div className="bg-white rounded-2xl shadow-xl p-6">
             <div className="flex justify-between items-center mb-6">
@@ -417,33 +432,15 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* Map and Bus List */}
         {busStop && !selectedBus && nearestBuses.length > 0 && !loading && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Map */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-800">Live Bus Locations</h3>
                 <div className="flex items-center gap-2">
-                  {/* Map Type Toggle */}
-                  <button
-                    onClick={toggleMapType}
-                    className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-                    title={mapType === 'street' ? 'Switch to Satellite View' : 'Switch to Street View'}
-                  >
-                    {mapType === 'street' ? (
-                      <>
-                        <Satellite size={18} />
-                        <span className="text-sm font-semibold">Satellite</span>
-                      </>
-                    ) : (
-                      <>
-                        <MapIconLucide size={18} />
-                        <span className="text-sm font-semibold">Street</span>
-                      </>
-                    )}
+                  <button onClick={toggleMapType} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition">
+                    {mapType === 'street' ? <><Satellite size={18} /><span className="text-sm font-semibold">Satellite</span></> : <><MapIconLucide size={18} /><span className="text-sm font-semibold">Street</span></>}
                   </button>
-                  
                   <span className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-semibold">
                     <span className="relative flex h-3 w-3">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
@@ -455,45 +452,17 @@ const PassengerPage = () => {
               </div>
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 {mapCenter && (
-                  <MapContainer
-                    center={mapCenter}
-                    zoom={14}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <TileLayer 
-                      url={getTileLayerUrl()} 
-                      attribution={getTileLayerAttribution()}
-                    />
+                  <MapContainer center={mapCenter} zoom={14} style={{ height: '100%', width: '100%' }}>
+                    <TileLayer url={getTileLayerUrl()} attribution={getTileLayerAttribution()} />
                     <MapUpdater center={mapCenter} />
-                    
-                    {/* Bus Stop Marker */}
-                    <Marker
-                      position={[busStop.location.latitude, busStop.location.longitude]}
-                      icon={stopIcon}
-                    >
-                      <Popup>
-                        <strong>{busStop.stopName}</strong><br />
-                        Your Location
-                      </Popup>
+                    <Marker position={[busStop.location.latitude, busStop.location.longitude]} icon={stopIcon}>
+                      <Popup><strong>{busStop.stopName}</strong><br />Your Location</Popup>
                     </Marker>
-                    
-                    {/* Bus Markers */}
                     {nearestBuses.map(bus => bus.currentLocation && (
-                      <Marker
-                        key={bus._id}
-                        position={[bus.currentLocation.latitude, bus.currentLocation.longitude]}
-                        icon={busIcon}
-                      >
+                      <Marker key={bus._id} position={[bus.currentLocation.latitude, bus.currentLocation.longitude]} icon={busIcon}>
                         <Popup>
                           <strong>{bus.busName}</strong><br />
                           {bus.busNumber}<br />
-                          {calculateDistance(
-                            bus.currentLocation.latitude,
-                            bus.currentLocation.longitude,
-                            busStop.location.latitude,
-                            busStop.location.longitude
-                          )} km away<br />
-                          ETA: {calculateETA(bus)}<br />
                           Speed: {bus.speed ? `${bus.speed.toFixed(0)} km/h` : 'N/A'}
                         </Popup>
                       </Marker>
@@ -503,7 +472,6 @@ const PassengerPage = () => {
               </div>
             </div>
 
-            {/* Bus List */}
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h3 className="text-xl font-bold text-gray-800 mb-4">
                 Nearby Buses ({nearestBuses.length})
@@ -517,37 +485,26 @@ const PassengerPage = () => {
                     busStop.location.longitude
                   ) : 'N/A';
                   
-                  const eta = calculateETA(bus);
-                  
                   return (
-                    <div
-                      key={bus._id}
-                      className="border-2 border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition cursor-pointer"
-                      onClick={() => trackBus(bus)}
-                    >
+                    <div key={bus._id} className="border-2 border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition cursor-pointer" onClick={() => trackBus(bus)}>
                       <div className="flex justify-between items-start mb-2">
                         <div>
                           <h4 className="font-bold text-lg">{bus.busName}</h4>
                           <p className="text-sm text-gray-600">{bus.busNumber}</p>
                         </div>
                         <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
-                          {distance} km
+                          ~{distance} km
                         </div>
                       </div>
                       <div className="flex items-center justify-between pt-2 border-t">
                         <div className="flex items-center gap-1 text-gray-700">
                           <Clock size={16} />
-                          <span className="text-sm font-semibold">{eta}</span>
+                          <span className="text-sm font-semibold">{calculateETA(bus)}</span>
                         </div>
                         <button className="text-blue-600 hover:text-blue-800 font-bold text-sm">
                           Track →
                         </button>
                       </div>
-                      {bus.speed && (
-                        <div className="mt-2 text-xs text-gray-500">
-                          Speed: {bus.speed.toFixed(0)} km/h
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -556,46 +513,29 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {/* No Buses Found */}
         {busStop && nearestBuses.length === 0 && !loading && (
           <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
             <BusIcon className="mx-auto text-gray-400 mb-4" size={64} />
             <h3 className="text-2xl font-bold text-gray-800 mb-2">No Active Buses</h3>
             <p className="text-gray-600 mb-4">There are currently no buses active on this route.</p>
-            <p className="text-sm text-gray-500">Stop: {busStop.stopName} ({busStop.stopCode})</p>
             <button onClick={resetView} className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold">
               Scan Another Stop
             </button>
           </div>
         )}
 
-        {/* Selected Bus Tracking with Route */}
         {selectedBus && selectedBus.currentLocation && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Map with Route */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold text-gray-800">Tracking {selectedBus.busName}</h3>
+                <div>
+                  <h3 className="text-xl font-bold text-gray-800">Tracking {selectedBus.busName}</h3>
+                  {loadingRoute && <p className="text-sm text-gray-500">Calculating road route...</p>}
+                </div>
                 <div className="flex items-center gap-2">
-                  {/* Map Type Toggle */}
-                  <button
-                    onClick={toggleMapType}
-                    className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-                    title={mapType === 'street' ? 'Switch to Satellite View' : 'Switch to Street View'}
-                  >
-                    {mapType === 'street' ? (
-                      <>
-                        <Satellite size={18} />
-                        <span className="text-sm font-semibold">Satellite</span>
-                      </>
-                    ) : (
-                      <>
-                        <MapIconLucide size={18} />
-                        <span className="text-sm font-semibold">Street</span>
-                      </>
-                    )}
+                  <button onClick={toggleMapType} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition">
+                    {mapType === 'street' ? <><Satellite size={18} /><span className="text-sm font-semibold">Satellite</span></> : <><MapIconLucide size={18} /><span className="text-sm font-semibold">Street</span></>}
                   </button>
-                  
                   <button onClick={stopTracking} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold">
                     Stop Tracking
                   </button>
@@ -603,35 +543,23 @@ const PassengerPage = () => {
               </div>
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 {mapCenter && (
-                  <MapContainer
-                    center={mapCenter}
-                    zoom={14}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <TileLayer 
-                      url={getTileLayerUrl()} 
-                      attribution={getTileLayerAttribution()}
-                    />
+                  <MapContainer center={mapCenter} zoom={14} style={{ height: '100%', width: '100%' }}>
+                    <TileLayer url={getTileLayerUrl()} attribution={getTileLayerAttribution()} />
                     <MapUpdater center={mapCenter} />
                     
-                    {/* Route Polyline connecting all stops */}
+                    {/* Complete route line (blue) - follows roads */}
                     {routeCoordinates.length > 0 && (
-                      <Polyline
-                        positions={routeCoordinates}
-                        color="#3B82F6"
-                        weight={4}
-                        opacity={0.7}
-                        dashArray="10, 10"
-                      />
+                      <Polyline positions={routeCoordinates} color="#3B82F6" weight={5} opacity={0.6} />
                     )}
                     
-                    {/* All Route Stops */}
+                    {/* Road route from bus to your stop (green - actual roads) */}
+                    {busToStopRoute.length > 0 && (
+                      <Polyline positions={busToStopRoute} color="#10B981" weight={6} opacity={0.9} />
+                    )}
+                    
+                    {/* All route stops */}
                     {selectedBus.route?.stops?.map((stop) => (
-                      <Marker
-                        key={stop._id}
-                        position={[stop.location.latitude, stop.location.longitude]}
-                        icon={stop._id === busStop._id ? stopIcon : routeStopIcon}
-                      >
+                      <Marker key={stop._id} position={[stop.location.latitude, stop.location.longitude]} icon={stop._id === busStop._id ? stopIcon : routeStopIcon}>
                         <Popup>
                           <strong>{stop.stopName}</strong><br />
                           {stop.stopCode}
@@ -640,7 +568,7 @@ const PassengerPage = () => {
                       </Marker>
                     ))}
                     
-                    {/* Bus Marker */}
+                    {/* Bus marker */}
                     <Marker position={[selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude]} icon={busIcon}>
                       <Popup>
                         <strong>{selectedBus.busName}</strong><br/>
@@ -648,28 +576,18 @@ const PassengerPage = () => {
                         Speed: {selectedBus.speed?.toFixed(0) || 0} km/h
                       </Popup>
                     </Marker>
-                    
-                    {/* Direct line from bus to your stop */}
-                    <Polyline
-                      positions={[
-                        [selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude],
-                        [busStop.location.latitude, busStop.location.longitude]
-                      ]}
-                      color="#EF4444"
-                      weight={2}
-                      opacity={0.6}
-                      dashArray="5, 10"
-                    />
                   </MapContainer>
                 )}
               </div>
               
-              {/* Quick Stats */}
               <div className="grid grid-cols-3 gap-4 mt-4">
                 <div className="bg-blue-50 p-4 rounded-lg text-center">
-                  <p className="text-sm text-gray-600">Distance</p>
+                  <p className="text-sm text-gray-600 flex items-center justify-center gap-1">
+                    <RouteIcon size={14} />
+                    Road Distance
+                  </p>
                   <p className="text-2xl font-bold text-blue-600">
-                    {calculateDistance(
+                    {routeDistance || calculateDistance(
                       selectedBus.currentLocation.latitude,
                       selectedBus.currentLocation.longitude,
                       busStop.location.latitude,
@@ -686,9 +604,35 @@ const PassengerPage = () => {
                   <p className="text-2xl font-bold text-purple-600">{selectedBus.speed?.toFixed(0) || 0} km/h</p>
                 </div>
               </div>
+              
+              {/* Route legend */}
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs font-semibold text-gray-700 mb-2">Map Legend:</p>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-1 bg-blue-500"></div>
+                    <span>Complete Route</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-1 bg-green-500"></div>
+                    <span>Road to Your Stop</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+                    <span>Bus</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-red-500 rounded-full"></div>
+                    <span>Your Stop</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span>Route Stops</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Route Stops */}
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h3 className="text-xl font-bold text-gray-800 mb-4">Route Stops</h3>
               <div className="space-y-3 max-h-96 overflow-y-auto">
@@ -727,6 +671,11 @@ const PassengerPage = () => {
                   </span>
                   Live tracking active
                 </p>
+                {routeDistance && (
+                  <p className="text-center text-sm text-green-700 mt-2">
+                    Following road route: {routeDistance} km
+                  </p>
+                )}
               </div>
             </div>
           </div>
