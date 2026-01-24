@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus } from 'lucide-react';
+import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit } from 'lucide-react';
 import api from '../services/api';
 
 const AdminPage = () => {
@@ -13,6 +13,8 @@ const AdminPage = () => {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [modalType, setModalType] = useState('');
+  const [editMode, setEditMode] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState({});
   const [showAssignDriverModal, setShowAssignDriverModal] = useState(false);
   const [selectedBusForDriver, setSelectedBusForDriver] = useState(null);
@@ -22,7 +24,6 @@ const AdminPage = () => {
     fetchDrivers();
     fetchAllRoutes();
     fetchAllStops();
-    // eslint-disable-next-line
   }, [activeTab]);
 
   const fetchData = async () => {
@@ -73,7 +74,7 @@ const AdminPage = () => {
     }
   };
 
-  const handleCreateBus = async (e) => {
+  const handleCreateOrUpdateBus = async (e) => {
     e.preventDefault();
     try {
       const busData = {
@@ -83,40 +84,59 @@ const AdminPage = () => {
         routeId: formData.routeId,
         driverId: formData.driverId || null
       };
-      await api.post('/buses', busData);
+      
+      if (editMode) {
+        await api.put(`/buses/${editingId}`, busData);
+        alert('Bus updated successfully!');
+      } else {
+        await api.post('/buses', busData);
+        alert('Bus created successfully!');
+      }
+      
       setShowModal(false);
+      setEditMode(false);
+      setEditingId(null);
       fetchData();
       setFormData({});
-      alert('Bus created successfully!');
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to create bus');
+      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus`);
     }
   };
 
-  const handleCreateRoute = async (e) => {
+  const handleCreateOrUpdateRoute = async (e) => {
     e.preventDefault();
     try {
-      await api.post('/routes', {
+      const routeData = {
         routeName: formData.routeName,
         routeNumber: formData.routeNumber,
         stops: formData.stops || [],
         startTime: formData.startTime,
         endTime: formData.endTime,
         frequency: parseInt(formData.frequency) || 30
-      });
+      };
+      
+      if (editMode) {
+        await api.put(`/routes/${editingId}`, routeData);
+        alert('Route updated successfully!');
+      } else {
+        await api.post('/routes', routeData);
+        alert('Route created successfully!');
+      }
+      
       setShowModal(false);
+      setEditMode(false);
+      setEditingId(null);
       fetchData();
       setFormData({});
-      alert('Route created successfully!');
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to create route');
+      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} route`);
     }
   };
 
-  const handleCreateStop = async (e) => {
+  const handleCreateOrUpdateStop = async (e) => {
     e.preventDefault();
     try {
-      await api.post('/bus-stops', {
+      const stopData = {
         stopName: formData.stopName,
         stopCode: formData.stopCode,
         location: {
@@ -124,14 +144,24 @@ const AdminPage = () => {
           longitude: parseFloat(formData.longitude)
         },
         address: formData.address
-      });
+      };
+      
+      if (editMode) {
+        await api.put(`/bus-stops/${editingId}`, stopData);
+        alert('Bus stop updated successfully!');
+      } else {
+        await api.post('/bus-stops', stopData);
+        alert('Bus stop created successfully!');
+      }
+      
       setShowModal(false);
+      setEditMode(false);
+      setEditingId(null);
       fetchData();
       fetchAllStops();
       setFormData({});
-      alert('Bus stop created successfully!');
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to create bus stop');
+      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus stop`);
     }
   };
 
@@ -166,7 +196,43 @@ const AdminPage = () => {
   const openModal = (type) => {
     setModalType(type);
     setShowModal(true);
+    setEditMode(false);
+    setEditingId(null);
     setFormData({});
+  };
+
+  const openEditModal = (type, item) => {
+    setModalType(type);
+    setEditMode(true);
+    setEditingId(item._id);
+    setShowModal(true);
+    
+    if (type === 'buses') {
+      setFormData({
+        busNumber: item.busNumber,
+        busName: item.busName,
+        capacity: item.capacity,
+        routeId: item.route?._id || '',
+        driverId: item.driver?._id || ''
+      });
+    } else if (type === 'routes') {
+      setFormData({
+        routeName: item.routeName,
+        routeNumber: item.routeNumber,
+        stops: item.stops?.map(s => s._id) || [],
+        startTime: item.startTime,
+        endTime: item.endTime,
+        frequency: item.frequency
+      });
+    } else if (type === 'stops') {
+      setFormData({
+        stopName: item.stopName,
+        stopCode: item.stopCode,
+        latitude: item.location?.latitude || '',
+        longitude: item.location?.longitude || '',
+        address: item.address || ''
+      });
+    }
   };
 
   const toggleStopSelection = (stopId) => {
@@ -302,9 +368,14 @@ const AdminPage = () => {
                               </span>
                             </td>
                             <td className="px-4 py-3">
-                              <button onClick={() => handleDelete(bus._id)} className="text-red-600 hover:text-red-800 transition">
-                                <Trash2 size={18} />
-                              </button>
+                              <div className="flex gap-2">
+                                <button onClick={() => openEditModal('buses', bus)} className="text-blue-600 hover:text-blue-800 transition" title="Edit">
+                                  <Edit size={18} />
+                                </button>
+                                <button onClick={() => handleDelete(bus._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
+                                  <Trash2 size={18} />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -334,9 +405,14 @@ const AdminPage = () => {
                               )}
                             </p>
                           </div>
-                          <button onClick={() => handleDelete(route._id)} className="text-red-600 hover:text-red-800 transition ml-4">
-                            <Trash2 size={18} />
-                          </button>
+                          <div className="flex gap-2 ml-4">
+                            <button onClick={() => openEditModal('routes', route)} className="text-blue-600 hover:text-blue-800 transition" title="Edit">
+                              <Edit size={18} />
+                            </button>
+                            <button onClick={() => handleDelete(route._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))
@@ -359,7 +435,10 @@ const AdminPage = () => {
                         <div className="flex gap-2">
                           <button onClick={() => downloadQRCode(stop._id, stop.stopName)} className="flex-1 flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded text-sm transition">
                             <Download size={16} />
-                            Download QR
+                            QR
+                          </button>
+                          <button onClick={() => openEditModal('stops', stop)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-2 rounded transition">
+                            <Edit size={16} />
                           </button>
                           <button onClick={() => handleDelete(stop._id)} className="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded transition">
                             <Trash2 size={16} />
@@ -379,13 +458,15 @@ const AdminPage = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Add New {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}</h3>
+              <h3 className="text-xl font-bold">
+                {editMode ? 'Edit' : 'Add New'} {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
+              </h3>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-gray-700">
                 <X size={24} />
               </button>
             </div>
             
-            <form onSubmit={modalType === 'buses' ? handleCreateBus : modalType === 'routes' ? handleCreateRoute : handleCreateStop}>
+            <form onSubmit={modalType === 'buses' ? handleCreateOrUpdateBus : modalType === 'routes' ? handleCreateOrUpdateRoute : handleCreateOrUpdateStop}>
               {modalType === 'buses' && (
                 <div className="space-y-4">
                   <div>
@@ -503,7 +584,7 @@ const AdminPage = () => {
               <div className="flex gap-3 mt-6">
                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-4 py-3 rounded-lg transition">Cancel</button>
                 <button type="submit" className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-semibold px-4 py-3 rounded-lg transition">
-                  Create {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
+                  {editMode ? 'Update' : 'Create'} {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
                 </button>
               </div>
             </form>
