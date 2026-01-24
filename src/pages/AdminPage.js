@@ -10,6 +10,7 @@ const AdminPage = () => {
   const [routes, setRoutes] = useState([]);
   const [busStops, setBusStops] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [modalType, setModalType] = useState('');
@@ -24,6 +25,9 @@ const AdminPage = () => {
     fetchDrivers();
     fetchAllRoutes();
     fetchAllStops();
+    if (activeTab === 'drivers') {
+      fetchAllUsers();
+    }
   }, [activeTab]);
 
   const fetchData = async () => {
@@ -38,9 +42,24 @@ const AdminPage = () => {
       } else if (activeTab === 'stops') {
         const res = await api.get('/bus-stops');
         setBusStops(res.data.busStops);
+      } else if (activeTab === 'drivers') {
+        await fetchAllUsers();
       }
     } catch (error) {
       console.error('Fetch error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchAllUsers = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/users');
+      setAllUsers(res.data.users || []);
+    } catch (error) {
+      console.error('Fetch users error:', error);
+      setAllUsers([]);
     } finally {
       setLoading(false);
     }
@@ -171,10 +190,14 @@ const AdminPage = () => {
       const endpoint = {
         buses: `/buses/${id}`,
         routes: `/routes/${id}`,
-        stops: `/bus-stops/${id}`
+        stops: `/bus-stops/${id}`,
+        drivers: `/users/${id}`
       }[activeTab];
       await api.delete(endpoint);
       fetchData();
+      if (activeTab === 'drivers') {
+        fetchDrivers(); // Refresh drivers list for bus assignment
+      }
       alert('Deleted successfully!');
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to delete');
@@ -301,18 +324,24 @@ const AdminPage = () => {
               <MapPin size={20} />
               Bus Stops ({busStops.length})
             </button>
+            <button onClick={() => setActiveTab('drivers')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'drivers' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
+              <UserPlus size={20} />
+              Drivers ({drivers.length})
+            </button>
           </div>
         </div>
 
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold">
-              {activeTab === 'buses' ? 'Manage Buses' : activeTab === 'routes' ? 'Manage Routes' : 'Manage Bus Stops'}
+              {activeTab === 'buses' ? 'Manage Buses' : activeTab === 'routes' ? 'Manage Routes' : activeTab === 'stops' ? 'Manage Bus Stops' : 'Manage Drivers'}
             </h2>
-            <button onClick={() => openModal(activeTab)} className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
-              <Plus size={20} />
-              Add New
-            </button>
+            {activeTab !== 'drivers' && (
+              <button onClick={() => openModal(activeTab)} className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
+                <Plus size={20} />
+                Add New
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -447,6 +476,60 @@ const AdminPage = () => {
                       </div>
                     ))
                   )}
+                </div>
+              )}
+
+              {activeTab === 'drivers' && (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Name</th>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Email</th>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Phone</th>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Role</th>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Assigned Bus</th>
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {allUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan="6" className="px-4 py-8 text-center text-gray-500">No users found.</td>
+                        </tr>
+                      ) : (
+                        allUsers.map((userItem) => {
+                          const assignedBus = buses.find(bus => bus.driver?._id === userItem._id);
+                          return (
+                            <tr key={userItem._id} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 font-semibold">{userItem.name}</td>
+                              <td className="px-4 py-3">{userItem.email}</td>
+                              <td className="px-4 py-3">{userItem.phone || 'N/A'}</td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${userItem.role === 'admin' ? 'bg-purple-100 text-purple-800' : userItem.role === 'driver' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>
+                                  {userItem.role}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                {assignedBus ? (
+                                  <span className="text-green-600 font-semibold">{assignedBus.busName} ({assignedBus.busNumber})</span>
+                                ) : (
+                                  <span className="text-gray-400">Not assigned</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {userItem.role !== 'admin' && (
+                                  <button onClick={() => handleDelete(userItem._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
+                                    <Trash2 size={18} />
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
