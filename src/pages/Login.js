@@ -6,7 +6,6 @@ import { Bus, AlertCircle } from 'lucide-react';
 const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
@@ -19,9 +18,21 @@ const Login = () => {
     setLoading(true);
 
     try {
-      await login(email, password);
+      const response = await login(email, password);
+      
+      // ✅ Navigate based on user role
+      if (response.user.role === 'admin') {
+        navigate('/admin');
+      } else if (response.user.role === 'driver') {
+        navigate('/driver');
+      } else if (response.user.role === 'student' || response.user.role === 'passenger') {
+        navigate('/passenger');
+      } else {
+        navigate('/');
+      }
       
     } catch (err) {
+      console.error('Login error:', err);
       setError(err.response?.data?.message || 'Login failed');
     } finally {
       setLoading(false);
@@ -47,8 +58,6 @@ const Login = () => {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          
-
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">
               Email Address
@@ -92,6 +101,7 @@ const Login = () => {
             )}
           </button>
         </form>
+        
         <div className="mt-6 text-center">
           <p className="text-gray-600">
             Don't have an account?{' '}
@@ -100,8 +110,6 @@ const Login = () => {
             </Link>
           </p>
         </div>
-
-        
 
         <div className="mt-6 text-center">
           <Link 
