@@ -58,23 +58,30 @@ const AdminPage = () => {
       // Try different endpoints that might exist on your backend
       let res;
       try {
-        res = await api.get('/users');
+        // First try to get only drivers
+        res = await api.get('/users/drivers');
+        console.log('Drivers from /users/drivers:', res.data);
+        setAllUsers(res.data.drivers || []);
+        return;
       } catch (error) {
-        // If /users doesn't work, try /users/all
+        console.log('/users/drivers endpoint not available, trying /users');
         try {
-          res = await api.get('/users/all');
-        } catch (error2) {
-          // If that doesn't work either, get drivers and combine with other user types
-          const driversRes = await api.get('/users/drivers');
-          setAllUsers(driversRes.data.drivers || []);
+          // Fallback to all users and filter drivers only
+          res = await api.get('/users');
+          console.log('Users from /users:', res.data);
+          const users = res.data.users || res.data || [];
+          // Filter to show only drivers
+          const driversOnly = users.filter(user => user.role === 'driver');
+          setAllUsers(driversOnly);
           return;
+        } catch (error2) {
+          console.log('Could not fetch users');
+          setAllUsers([]);
         }
       }
-      setAllUsers(res.data.users || res.data || []);
     } catch (error) {
       console.error('Fetch users error:', error);
-      // Fallback: just show drivers if we can't get all users
-      setAllUsers(drivers);
+      setAllUsers([]);
     } finally {
       setLoading(false);
     }
@@ -208,14 +215,21 @@ const AdminPage = () => {
         stops: `/bus-stops/${id}`,
         drivers: `/users/${id}`
       }[activeTab];
-      await api.delete(endpoint);
+      
+      console.log('Attempting to delete:', endpoint);
+      const response = await api.delete(endpoint);
+      console.log('Delete response:', response);
+      
       fetchData();
       if (activeTab === 'drivers') {
         fetchDrivers(); // Refresh drivers list for bus assignment
+        fetchAllUsers(); // Refresh the users list
       }
       alert('Deleted successfully!');
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to delete');
+      console.error('Delete error details:', error.response || error);
+      const errorMessage = error.response?.data?.message || error.message || 'Failed to delete';
+      alert(`Delete failed: ${errorMessage}\n\nCheck browser console for details.`);
     }
   };
 
@@ -460,7 +474,7 @@ const AdminPage = () => {
                         </div>
                       </div>
                     ))
-                  )}
+                  )}+
                 </div>
               )}
 
@@ -496,15 +510,6 @@ const AdminPage = () => {
 
               {activeTab === 'drivers' && (
                 <div>
-                  {allUsers.length === 0 && !loading && (
-                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-                      <p className="text-sm text-yellow-800">
-                        <strong>Note:</strong> If you're seeing "No users found", your backend might not have a <code className="bg-yellow-100 px-1 rounded">/users</code> endpoint. 
-                        You may need to add this endpoint to your backend to manage all users. Currently showing drivers only below.
-                      </p>
-                    </div>
-                  )}
-                  
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead className="bg-gray-50">
@@ -512,7 +517,6 @@ const AdminPage = () => {
                           <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Name</th>
                           <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Email</th>
                           <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Phone</th>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Role</th>
                           <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Assigned Bus</th>
                           <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
                         </tr>
@@ -520,7 +524,9 @@ const AdminPage = () => {
                       <tbody className="divide-y divide-gray-200">
                         {allUsers.length === 0 && drivers.length === 0 ? (
                           <tr>
-                            <td colSpan="6" className="px-4 py-8 text-center text-gray-500">No users found.</td>
+                            <td colSpan="5" className="px-4 py-8 text-center text-gray-500">
+                              No drivers found. Register drivers at the /register page.
+                            </td>
                           </tr>
                         ) : (
                           (allUsers.length > 0 ? allUsers : drivers).map((userItem) => {
@@ -531,11 +537,6 @@ const AdminPage = () => {
                                 <td className="px-4 py-3">{userItem.email}</td>
                                 <td className="px-4 py-3">{userItem.phone || 'N/A'}</td>
                                 <td className="px-4 py-3">
-                                  <span className={`px-2 py-1 rounded-full text-xs font-semibold ${userItem.role === 'admin' ? 'bg-purple-100 text-purple-800' : userItem.role === 'driver' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>
-                                    {userItem.role || 'driver'}
-                                  </span>
-                                </td>
-                                <td className="px-4 py-3">
                                   {assignedBus ? (
                                     <span className="text-green-600 font-semibold">{assignedBus.busName} ({assignedBus.busNumber})</span>
                                   ) : (
@@ -543,13 +544,13 @@ const AdminPage = () => {
                                   )}
                                 </td>
                                 <td className="px-4 py-3">
-                                  {userItem.role !== 'admin' && userItem._id !== user._id && (
+                                  {userItem._id !== user._id && (
                                     <button onClick={() => handleDelete(userItem._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
                                       <Trash2 size={18} />
                                     </button>
                                   )}
-                                  {(userItem.role === 'admin' || userItem._id === user._id) && (
-                                    <span className="text-xs text-gray-400">Protected</span>
+                                  {userItem._id === user._id && (
+                                    <span className="text-xs text-gray-400">You</span>
                                   )}
                                 </td>
                               </tr>
