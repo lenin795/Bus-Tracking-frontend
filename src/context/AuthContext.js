@@ -24,7 +24,7 @@ export const AuthProvider = ({ children }) => {
     if (token) {
       try {
         const response = await axios.get(
-          `${process.env.REACT_APP_API_URL}/api/auth/me`, // ✅ Added /api/
+          `${process.env.REACT_APP_API_URL}/api/auth/me`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setUser(response.data.user);
@@ -36,11 +36,12 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   };
 
-  const login = async (email, password, role) => {
+  // ✅ FIXED: Removed role parameter
+  const login = async (email, password) => {
     try {
       const response = await axios.post(
-        `${process.env.REACT_APP_API_URL}/api/auth/login`, // ✅ Added /api/
-        { email, password, role }
+        `${process.env.REACT_APP_API_URL}/api/auth/login`,
+        { email, password } // ✅ Removed role from here
       );
       
       localStorage.setItem('token', response.data.token);
@@ -55,7 +56,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (name, email, password, role, phone) => {
     try {
       const response = await axios.post(
-        `${process.env.REACT_APP_API_URL}/api/auth/register`, // ✅ Added /api/
+        `${process.env.REACT_APP_API_URL}/api/auth/register`,
         { name, email, password, role, phone }
       );
       
