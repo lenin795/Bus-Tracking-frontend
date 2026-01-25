@@ -19,8 +19,8 @@ const Login = () => {
     setLoading(true);
 
     try {
-      await login(email, password, role);
-      navigate(`/${role}`);
+      await login(email, password);
+      
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed');
     } finally {
