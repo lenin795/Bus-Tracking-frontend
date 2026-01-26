@@ -2,7 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import Login from './pages/Login';
-import Register from './pages/Register';  // ← Add this
+import Register from './pages/Register';  
 import AdminPage from './pages/AdminPage';
 import DriverPage from './pages/DriverPage';
 import PassengerPage from './pages/PassengerPage';
@@ -14,9 +14,8 @@ function App() {
       <Router>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />  {/* ← Add this */}
+          <Route path="/register" element={<Register />} /> 
           
-          {/* Public route for passengers */}
           <Route path="/track" element={<PassengerPage />} />
           <Route path="/passenger" element={<PassengerPage />} />
           

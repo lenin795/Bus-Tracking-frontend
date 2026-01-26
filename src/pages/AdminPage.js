@@ -340,7 +340,7 @@ const AdminPage = () => {
 
       <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="bg-white rounded-lg shadow-md mb-6">
-          <div className="flex border-b">
+          <div className="flex overflow-x-auto border-b">
             <button onClick={() => setActiveTab('buses')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'buses' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
               <Bus size={20} />
               Buses ({buses.length})
