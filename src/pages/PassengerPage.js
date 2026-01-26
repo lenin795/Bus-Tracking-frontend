@@ -234,7 +234,11 @@ const PassengerPage = () => {
         aspectRatio: 1.0,
         showTorchButtonIfSupported: true,
         rememberLastUsedCamera: true,
-        supportedScanTypes: [0, 1] // QR_CODE and other formats
+        supportedScanTypes: [0, 1], // QR_CODE and other formats
+        videoConstraints: {
+          facingMode: { ideal: "environment" } // Use back camera by default
+        },
+        formatsToSupport: [0] // Only QR codes
       }, false);
       scanner.render(onScanSuccess, onScanError);
       scannerRef.current = scanner;
