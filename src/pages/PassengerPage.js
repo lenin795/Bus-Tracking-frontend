@@ -57,6 +57,9 @@ const PassengerPage = () => {
   const [selectedBus, setSelectedBus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [scanError, setScanError] = useState('');
+  const [manualStopCode, setManualStopCode] = useState('');
+  const [showManualEntry, setShowManualEntry] = useState(false);
   const [mapCenter, setMapCenter] = useState(null);
   const [mapType, setMapType] = useState('street');
   const [routeCoordinates, setRouteCoordinates] = useState([]);
@@ -223,8 +226,16 @@ const PassengerPage = () => {
   const startScanner = () => {
     setShowScanner(true);
     setError('');
+    setScanError('');
     setTimeout(() => {
-      const scanner = new Html5QrcodeScanner('qr-reader', { fps: 10, qrbox: { width: 250, height: 250 } }, false);
+      const scanner = new Html5QrcodeScanner('qr-reader', { 
+        fps: 10, 
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+        showTorchButtonIfSupported: true,
+        rememberLastUsedCamera: true,
+        supportedScanTypes: [0, 1] // QR_CODE and other formats
+      }, false);
       scanner.render(onScanSuccess, onScanError);
       scannerRef.current = scanner;
     }, 100);
@@ -236,6 +247,7 @@ const PassengerPage = () => {
       scannerRef.current = null;
     }
     setShowScanner(false);
+    setScanError('');
   };
 
   const onScanSuccess = async (decodedText) => {
@@ -245,15 +257,27 @@ const PassengerPage = () => {
       const stopCode = url.searchParams.get('stop');
       if (stopCode) await fetchNearestBuses(stopCode);
     } catch (err) {
-      setError('Invalid QR code. Please scan a valid bus stop QR code.');
+      // If URL parsing fails, treat it as a direct stop code
+      if (decodedText && decodedText.length > 0) {
+        await fetchNearestBuses(decodedText);
+      } else {
+        setScanError('Invalid QR code. Please scan a valid bus stop QR code.');
+        setShowScanner(true);
+      }
     }
   };
 
-  const onScanError = () => {};
+  const onScanError = (errorMessage) => {
+    // Only log severe errors, ignore routine scan failures
+    if (errorMessage && !errorMessage.includes('NotFoundException')) {
+      console.log('Scan error:', errorMessage);
+    }
+  };
 
   const fetchNearestBuses = async (stopCode) => {
     setLoading(true);
     setError('');
+    setScanError('');
     try {
       const response = await api.get(`/passenger/nearest-buses/${stopCode}`);
       setBusStop(response.data.busStop);
@@ -268,10 +292,23 @@ const PassengerPage = () => {
       if (buses.length === 0) {
         setError('No active buses found on this route. Waiting for buses to start...');
       }
+      
+      setShowManualEntry(false);
+      setManualStopCode('');
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to fetch buses');
+      setError(err.response?.data?.message || 'Failed to fetch buses. Please check the stop code.');
+      setScanError('Stop not found. Please try again or enter the stop code manually.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleManualEntry = (e) => {
+    e.preventDefault();
+    if (manualStopCode.trim()) {
+      fetchNearestBuses(manualStopCode.trim());
+      setShowScanner(false);
+      setShowManualEntry(false);
     }
   };
 
@@ -425,11 +462,61 @@ const PassengerPage = () => {
                 <X size={28} />
               </button>
             </div>
+            
+            {scanError && (
+              <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-r-lg">
+                <p className="font-semibold">Scan Error</p>
+                <p>{scanError}</p>
+              </div>
+            )}
+            
             <div id="qr-reader" className="w-full"></div>
-            <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-              <p className="text-center text-blue-800 font-semibold">
-                📱 Position the QR code within the camera frame
-              </p>
+            
+            <div className="mt-6 space-y-4">
+              <div className="p-4 bg-blue-50 rounded-lg">
+                <p className="text-center text-blue-800 font-semibold mb-2">
+                  📱 Position the QR code within the camera frame
+                </p>
+                <p className="text-center text-sm text-blue-600">
+                  Make sure to allow camera permissions when prompted
+                </p>
+              </div>
+              
+              <div className="text-center">
+                <button 
+                  onClick={() => setShowManualEntry(!showManualEntry)} 
+                  className="text-blue-600 hover:text-blue-800 font-semibold text-sm underline"
+                >
+                  {showManualEntry ? 'Hide' : 'Can\'t scan? Enter stop code manually'}
+                </button>
+              </div>
+              
+              {showManualEntry && (
+                <form onSubmit={handleManualEntry} className="mt-4 p-4 bg-gray-50 rounded-lg">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Enter Bus Stop Code
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={manualStopCode}
+                      onChange={(e) => setManualStopCode(e.target.value)}
+                      placeholder="e.g., CS001"
+                      className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      required
+                    />
+                    <button
+                      type="submit"
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold transition"
+                    >
+                      Find
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    💡 You can find the stop code printed on the QR code poster at your bus stop
+                  </p>
+                </form>
+              )}
             </div>
           </div>
         )}
