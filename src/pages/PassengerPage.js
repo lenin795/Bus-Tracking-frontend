@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite, Route as RouteIcon } from 'lucide-react';
+import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite, Route as RouteIcon, Bell, CheckCircle, AlertTriangle } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Html5QrcodeScanner } from 'html5-qrcode';
@@ -38,7 +38,14 @@ const routeStopIcon = new L.divIcon({
   iconAnchor: [8, 8]
 });
 
-// ✅ FIX: MapUpdater now smoothly pans to new center on every update
+// ✅ Next stop icon (yellow/orange)
+const nextStopIcon = new L.divIcon({
+  html: '<div style="background: #F59E0B; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 8px rgba(245,158,11,0.5);"></div>',
+  className: '',
+  iconSize: [20, 20],
+  iconAnchor: [10, 10]
+});
+
 function MapUpdater({ center }) {
   const map = useMap();
   useEffect(() => {
@@ -67,36 +74,107 @@ const PassengerPage = () => {
   const [routeDistance, setRouteDistance] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
-
+  
+  // ✅ NEW: Next stop tracking and notifications
+  const [nextStop, setNextStop] = useState(null);
+  const [busStatus, setBusStatus] = useState(null); // 'approaching', 'passed', 'far'
+  const [notification, setNotification] = useState(null);
+  
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
 
-  // ✅ FIX: Use refs to hold current state values so socket listeners
-  // always read the latest values without needing to be re-registered.
-  // This is the core fix for the stale closure problem.
   const selectedBusRef = useRef(null);
   const busStopRef = useRef(null);
   const nearestBusesRef = useRef([]);
 
-  // Keep refs in sync with state on every render
   useEffect(() => { selectedBusRef.current = selectedBus; }, [selectedBus]);
   useEffect(() => { busStopRef.current = busStop; }, [busStop]);
   useEffect(() => { nearestBusesRef.current = nearestBuses; }, [nearestBuses]);
 
-  // ✅ FIX: fetchRoadRoute is stable via useCallback so it can be called from socket handlers
+  // ✅ Auto-dismiss notification after 5 seconds
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  const showNotification = useCallback((message, type = 'info') => {
+    setNotification({ message, type });
+  }, []);
+
+  // ✅ Calculate which stop is next for the bus
+  const calculateNextStop = useCallback((bus, userStop, stops) => {
+    if (!bus?.currentLocation || !userStop || !stops?.length) return null;
+
+    const userStopIndex = stops.findIndex(s => s._id === userStop._id);
+    if (userStopIndex === -1) return null;
+
+    // Find the closest stop ahead of the bus
+    let closestStopAhead = null;
+    let minDistance = Infinity;
+
+    for (let i = 0; i <= userStopIndex; i++) {
+      const stop = stops[i];
+      const distance = calculateDistance(
+        bus.currentLocation.latitude,
+        bus.currentLocation.longitude,
+        stop.location.latitude,
+        stop.location.longitude
+      );
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestStopAhead = { ...stop, index: i, distance };
+      }
+    }
+
+    return closestStopAhead;
+  }, []);
+
+  // ✅ Determine bus status relative to user's stop
+  const determineBusStatus = useCallback((bus, userStop, nextStopData) => {
+    if (!bus?.currentLocation || !userStop || !nextStopData) return 'far';
+
+    const userStopIndex = busStop?.route?.stops?.findIndex(s => s._id === userStop._id) ?? -1;
+    if (userStopIndex === -1) return 'far';
+
+    const distanceToUserStop = parseFloat(calculateDistance(
+      bus.currentLocation.latitude,
+      bus.currentLocation.longitude,
+      userStop.location.latitude,
+      userStop.location.longitude
+    ));
+
+    // If the next stop is past the user's stop, bus has passed
+    if (nextStopData.index > userStopIndex) {
+      return 'passed';
+    }
+
+    // If bus is within 1km of user's stop and moving toward it
+    if (distanceToUserStop <= 1 && nextStopData.index <= userStopIndex) {
+      return 'approaching';
+    }
+
+    return 'far';
+  }, [busStop]);
+
   const fetchRoadRoute = useCallback(async (startLat, startLon, endLat, endLon) => {
     setLoadingRoute(true);
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
+      
       const response = await fetch(url);
       const data = await response.json();
-
-      if (data.code === 'Ok' && data.routes?.length > 0) {
+      
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
         const route = data.routes[0];
         const coordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
         setBusToStopRoute(coordinates);
         setRouteDistance((route.distance / 1000).toFixed(2));
+        console.log('✅ Road route fetched:', coordinates.length, 'points');
       } else {
+        // Fallback to straight line
         setBusToStopRoute([[startLat, startLon], [endLat, endLon]]);
       }
     } catch (error) {
@@ -110,28 +188,32 @@ const PassengerPage = () => {
   const fetchCompleteRouteWithRoads = useCallback(async (stops) => {
     try {
       if (stops.length < 2) return;
-      const coordinates = stops.map(stop =>
+      
+      const coordinates = stops.map(stop => 
         `${stop.location.longitude},${stop.location.latitude}`
       ).join(';');
-
+      
       const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+      
       const response = await fetch(url);
       const data = await response.json();
-
-      if (data.code === 'Ok' && data.routes?.length > 0) {
-        const coords = data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+      
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const coords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
         setRouteCoordinates(coords);
+        console.log('✅ Complete route fetched:', coords.length, 'points');
       } else {
-        setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
+        const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+        setRouteCoordinates(coords);
       }
     } catch (error) {
       console.error('Error fetching complete route:', error);
-      setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
+      const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
+      setRouteCoordinates(coords);
     }
   }, []);
 
-  // ✅ FIX: Socket setup runs ONCE. Listeners use refs so they always
-  // have access to the latest state without needing re-registration.
   useEffect(() => {
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
     socketRef.current = io(SOCKET_URL, {
@@ -144,7 +226,6 @@ const PassengerPage = () => {
 
     socketRef.current.on('connect', () => {
       console.log('✅ Socket connected:', socketRef.current.id);
-      // Re-subscribe to all tracked buses on reconnect
       nearestBusesRef.current.forEach(bus => {
         socketRef.current.emit('passenger:track-bus', { busId: bus._id });
       });
@@ -158,15 +239,12 @@ const PassengerPage = () => {
       console.error('🔴 Socket connection error:', error.message);
     });
 
-    // ✅ FIX: This handler now reads from refs (always fresh) instead
-    // of the stale closure values from when the effect first ran.
     socketRef.current.on('bus:location-update', (data) => {
       console.log('📍 Bus location update received:', data);
-
+      
       const currentSelectedBus = selectedBusRef.current;
       const currentBusStop = busStopRef.current;
 
-      // ✅ FIX: Update nearestBuses using functional setState (no stale closure)
       setNearestBuses(prev => prev.map(bus => {
         if (bus._id === data.busId) {
           return {
@@ -182,30 +260,41 @@ const PassengerPage = () => {
         return bus;
       }));
 
-      // ✅ FIX: If this update is for the currently selected bus, update it too
       if (currentSelectedBus && currentSelectedBus._id === data.busId) {
         const newLat = data.location.latitude;
         const newLng = data.location.longitude;
 
-        setSelectedBus(prev => ({
-          ...prev,
+        const updatedBus = {
+          ...currentSelectedBus,
           currentLocation: { latitude: newLat, longitude: newLng },
           speed: data.speed,
           lastUpdate: new Date()
-        }));
+        };
 
-        // Move the map to follow the bus
+        setSelectedBus(updatedBus);
         setMapCenter([newLat, newLng]);
         setLastUpdateTime(new Date());
 
-        // Recalculate road route from new bus position to stop
         if (currentBusStop) {
-          fetchRoadRoute(
-            newLat,
-            newLng,
-            currentBusStop.location.latitude,
-            currentBusStop.location.longitude
-          );
+          // ✅ Calculate next stop
+          const nextStopData = calculateNextStop(updatedBus, currentBusStop, updatedBus.route?.stops);
+          setNextStop(nextStopData);
+
+          // ✅ Determine bus status and show notifications
+          const status = determineBusStatus(updatedBus, currentBusStop, nextStopData);
+          
+          if (status !== busStatus) {
+            setBusStatus(status);
+            
+            if (status === 'approaching') {
+              showNotification(`🚌 ${updatedBus.busName} is approaching your stop!`, 'success');
+            } else if (status === 'passed') {
+              showNotification(`⚠️ ${updatedBus.busName} has passed your stop`, 'warning');
+            }
+          }
+
+          // Fetch updated road route
+          fetchRoadRoute(newLat, newLng, currentBusStop.location.latitude, currentBusStop.location.longitude);
         }
       }
     });
@@ -214,7 +303,6 @@ const PassengerPage = () => {
       console.log('🔴 Bus offline:', data.busId);
       setNearestBuses(prev => prev.filter(bus => bus._id !== data.busId));
 
-      // Use ref to check selected bus without stale closure
       if (selectedBusRef.current && selectedBusRef.current._id === data.busId) {
         setError('Selected bus has gone offline');
         setSelectedBus(null);
@@ -230,19 +318,16 @@ const PassengerPage = () => {
       if (socketRef.current) socketRef.current.disconnect();
       if (scannerRef.current) scannerRef.current.clear().catch(console.error);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // ✅ Empty deps — runs once. Refs handle fresh state access.
+  }, [searchParams, fetchRoadRoute, calculateNextStop, determineBusStatus, showNotification]);
 
-  // ✅ FIX: Subscribe to new buses when nearestBuses changes
   useEffect(() => {
     if (socketRef.current?.connected && nearestBuses.length > 0) {
       nearestBuses.forEach(bus => {
         socketRef.current.emit('passenger:track-bus', { busId: bus._id });
       });
     }
-  }, [nearestBuses.length]); // Only re-run when buses are added/removed, not on every location update
+  }, [nearestBuses.length]);
 
-  // Fetch route when a bus is first selected
   useEffect(() => {
     if (selectedBus?.currentLocation && busStop) {
       fetchRoadRoute(
@@ -251,12 +336,12 @@ const PassengerPage = () => {
         busStop.location.latitude,
         busStop.location.longitude
       );
-
+      
       if (selectedBus.route?.stops) {
         fetchCompleteRouteWithRoads(selectedBus.route.stops);
       }
     }
-  }, [selectedBus?._id, busStop]); // ✅ Only re-run when bus ID changes (new selection), not on every location update
+  }, [selectedBus?._id, busStop]);
 
   const startScanner = () => {
     setShowScanner(true);
@@ -355,8 +440,19 @@ const PassengerPage = () => {
     setBusToStopRoute([]);
     setRouteCoordinates([]);
     setRouteDistance(null);
+    setNextStop(null);
+    setBusStatus(null);
+    
     if (bus.currentLocation) {
       setMapCenter([bus.currentLocation.latitude, bus.currentLocation.longitude]);
+      
+      // ✅ Calculate initial next stop
+      if (busStop && bus.route?.stops) {
+        const nextStopData = calculateNextStop(bus, busStop, bus.route.stops);
+        setNextStop(nextStopData);
+        const status = determineBusStatus(bus, busStop, nextStopData);
+        setBusStatus(status);
+      }
     }
   };
 
@@ -366,6 +462,8 @@ const PassengerPage = () => {
     setBusToStopRoute([]);
     setRouteDistance(null);
     setLastUpdateTime(null);
+    setNextStop(null);
+    setBusStatus(null);
     if (busStop) {
       setMapCenter([busStop.location.latitude, busStop.location.longitude]);
     }
@@ -385,6 +483,8 @@ const PassengerPage = () => {
     setBusToStopRoute([]);
     setRouteDistance(null);
     setLastUpdateTime(null);
+    setNextStop(null);
+    setBusStatus(null);
     setError('');
   };
 
@@ -441,6 +541,21 @@ const PassengerPage = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      {/* ✅ Notification Toast */}
+      {notification && (
+        <div className={`fixed top-4 right-4 z-[9999] flex items-center gap-3 px-5 py-4 rounded-xl shadow-2xl text-white font-semibold animate-slide-in ${
+          notification.type === 'success' ? 'bg-green-600' 
+            : notification.type === 'warning' ? 'bg-orange-600' 
+            : 'bg-blue-600'
+        }`}>
+          <Bell className="animate-bounce" size={20} />
+          <span>{notification.message}</span>
+          <button onClick={() => setNotification(null)} className="ml-2 opacity-75 hover:opacity-100">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       <div className="bg-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
@@ -586,7 +701,6 @@ const PassengerPage = () => {
                         📍 Your Location
                       </Popup>
                     </Marker>
-                    {/* ✅ FIX: Markers now use live state from nearestBuses — updates every time state changes */}
                     {nearestBuses.map(bus => bus.currentLocation && (
                       <Marker
                         key={bus._id}
@@ -609,9 +723,7 @@ const PassengerPage = () => {
                     <MapPin size={20} />
                     Waiting for buses to start on this route...
                   </p>
-                  <p className="text-center text-sm text-blue-600 mt-2">
-                    Active buses will appear here automatically.
-                  </p>
+                  <p className="text-center text-sm text-blue-600 mt-2">Active buses will appear here automatically.</p>
                 </div>
               )}
             </div>
@@ -689,7 +801,6 @@ const PassengerPage = () => {
                   <h3 className="text-xl font-bold text-gray-800">Tracking {selectedBus.busName}</h3>
                   <div className="flex items-center gap-3 mt-1">
                     {loadingRoute && <p className="text-sm text-gray-500">Calculating road route...</p>}
-                    {/* ✅ NEW: Live update timestamp indicator */}
                     {lastUpdateTime && (
                       <span className="inline-flex items-center gap-1 text-xs text-green-600 font-semibold">
                         <span className="relative flex h-2 w-2">
@@ -713,43 +824,73 @@ const PassengerPage = () => {
                 </div>
               </div>
 
+              {/* ✅ Bus Status Banner */}
+              {busStatus && (
+                <div className={`mb-4 p-4 rounded-xl border-2 flex items-center gap-3 ${
+                  busStatus === 'approaching'
+                    ? 'bg-green-50 border-green-300 text-green-800'
+                    : busStatus === 'passed'
+                    ? 'bg-orange-50 border-orange-300 text-orange-800'
+                    : 'bg-blue-50 border-blue-300 text-blue-800'
+                }`}>
+                  {busStatus === 'approaching' ? <CheckCircle size={24} />
+                    : busStatus === 'passed' ? <AlertTriangle size={24} />
+                    : <Navigation2 size={24} />}
+                  <div className="flex-1">
+                    <p className="font-bold">
+                      {busStatus === 'approaching' ? '🚌 Bus is approaching your stop!'
+                        : busStatus === 'passed' ? '⚠️ Bus has passed your stop'
+                        : `Bus is ${routeDistance || '?'} km away`}
+                    </p>
+                    {nextStop && (
+                      <p className="text-sm mt-1">
+                        Next stop: <span className="font-semibold">{nextStop.stopName}</span> (~{nextStop.distance} km away)
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 {mapCenter && (
                   <MapContainer center={mapCenter} zoom={14} style={{ height: '100%', width: '100%' }}>
                     <TileLayer url={getTileLayerUrl()} attribution={getTileLayerAttribution()} />
-                    {/* ✅ FIX: MapUpdater receives the live mapCenter which updates on every socket event */}
                     <MapUpdater center={mapCenter} />
 
+                    {/* ✅ Complete route (all stops) */}
                     {routeCoordinates.length > 0 && (
                       <Polyline positions={routeCoordinates} color="#3B82F6" weight={5} opacity={0.6} />
                     )}
+
+                    {/* ✅ Road-based route from bus to user's stop */}
                     {busToStopRoute.length > 0 && (
                       <Polyline positions={busToStopRoute} color="#10B981" weight={6} opacity={0.9} />
                     )}
 
-                    {selectedBus.route?.stops?.map((stop) => (
-                      <Marker
-                        key={stop._id}
-                        position={[stop.location.latitude, stop.location.longitude]}
-                        icon={stop._id === busStop._id ? stopIcon : routeStopIcon}
-                      >
-                        <Popup>
-                          <strong>{stop.stopName}</strong><br />
-                          {stop.stopCode}
-                          {stop._id === busStop._id && (
-                            <><br /><span className="text-blue-600 font-semibold">📍 You are here</span></>
-                          )}
-                        </Popup>
-                      </Marker>
-                    ))}
+                    {/* ✅ Route stops with next stop highlighted */}
+                    {selectedBus.route?.stops?.map((stop) => {
+                      const isUserStop = stop._id === busStop._id;
+                      const isNextStop = nextStop && stop._id === nextStop._id;
+                      
+                      return (
+                        <Marker
+                          key={stop._id}
+                          position={[stop.location.latitude, stop.location.longitude]}
+                          icon={isUserStop ? stopIcon : isNextStop ? nextStopIcon : routeStopIcon}
+                        >
+                          <Popup>
+                            <strong>{stop.stopName}</strong><br />
+                            {stop.stopCode}
+                            {isUserStop && <><br /><span className="text-blue-600 font-semibold">📍 You are here</span></>}
+                            {isNextStop && <><br /><span className="text-orange-600 font-semibold">🎯 Next stop</span></>}
+                          </Popup>
+                        </Marker>
+                      );
+                    })}
 
-                    {/* ✅ FIX: Bus marker position comes from selectedBus.currentLocation which
-                        is updated by setSelectedBus() in the socket handler — so it moves live! */}
+                    {/* ✅ Bus marker */}
                     <Marker
-                      position={[
-                        selectedBus.currentLocation.latitude,
-                        selectedBus.currentLocation.longitude
-                      ]}
+                      position={[selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude]}
                       icon={busIcon}
                     >
                       <Popup>
@@ -794,37 +935,64 @@ const PassengerPage = () => {
                   <div className="flex items-center gap-2"><div className="w-8 h-1 bg-green-500"></div><span>Road to Your Stop</span></div>
                   <div className="flex items-center gap-2"><div className="w-4 h-4 bg-blue-500 rounded-full"></div><span>Bus</span></div>
                   <div className="flex items-center gap-2"><div className="w-4 h-4 bg-red-500 rounded-full"></div><span>Your Stop</span></div>
+                  <div className="flex items-center gap-2"><div className="w-3 h-3 bg-orange-500 rounded-full"></div><span>Next Stop</span></div>
                   <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded-full"></div><span>Route Stops</span></div>
                 </div>
               </div>
             </div>
 
             <div className="bg-white rounded-2xl shadow-xl p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Route Stops</h3>
+              <h3 className="text-xl font-bold text-gray-800 mb-4">Route Progress</h3>
+              
+              {/* ✅ Next Stop Card */}
+              {nextStop && (
+                <div className="bg-gradient-to-br from-orange-50 to-yellow-50 border-2 border-orange-300 p-4 rounded-xl mb-4">
+                  <p className="text-sm text-orange-800 font-semibold mb-1">🎯 Next Stop</p>
+                  <p className="font-bold text-lg text-orange-900">{nextStop.stopName}</p>
+                  <p className="text-sm text-orange-700 mt-1">~{nextStop.distance} km away</p>
+                </div>
+              )}
+
+              <h4 className="font-semibold text-gray-700 mb-3 text-sm">All Stops ({selectedBus.route?.stops?.length || 0})</h4>
               <div className="space-y-3 max-h-96 overflow-y-auto">
-                {selectedBus.route?.stops?.map((stop, index) => (
-                  <div
-                    key={stop._id}
-                    className={`flex items-center p-3 rounded-xl ${
-                      stop._id === busStop._id
-                        ? 'bg-blue-50 border-2 border-blue-500'
-                        : 'bg-gray-50'
-                    }`}
-                  >
-                    <div className={`rounded-full w-10 h-10 flex items-center justify-center font-bold mr-3 ${
-                      stop._id === busStop._id ? 'bg-blue-600 text-white' : 'bg-gray-300'
-                    }`}>
-                      {index + 1}
+                {selectedBus.route?.stops?.map((stop, index) => {
+                  const isUserStop = stop._id === busStop._id;
+                  const isNextStop = nextStop && stop._id === nextStop._id;
+                  const isPassed = nextStop && index < nextStop.index;
+
+                  return (
+                    <div
+                      key={stop._id}
+                      className={`flex items-center p-3 rounded-xl transition ${
+                        isUserStop ? 'bg-blue-50 border-2 border-blue-500'
+                          : isNextStop ? 'bg-orange-50 border-2 border-orange-400'
+                          : isPassed ? 'bg-gray-100 opacity-60'
+                          : 'bg-gray-50'
+                      }`}
+                    >
+                      <div className={`rounded-full w-10 h-10 flex items-center justify-center font-bold mr-3 text-sm shrink-0 ${
+                        isUserStop ? 'bg-blue-600 text-white'
+                          : isNextStop ? 'bg-orange-500 text-white'
+                          : isPassed ? 'bg-gray-400 text-white'
+                          : 'bg-gray-300'
+                      }`}>
+                        {isPassed ? '✓' : index + 1}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className={`font-bold truncate ${isPassed ? 'line-through text-gray-500' : ''}`}>
+                          {stop.stopName}
+                        </p>
+                        <p className="text-xs text-gray-600">{stop.stopCode}</p>
+                      </div>
+                      {isUserStop && (
+                        <span className="bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full shrink-0">You</span>
+                      )}
+                      {isNextStop && (
+                        <span className="bg-orange-500 text-white text-xs font-bold px-2 py-1 rounded-full shrink-0">Next</span>
+                      )}
                     </div>
-                    <div className="flex-1">
-                      <p className="font-bold">{stop.stopName}</p>
-                      <p className="text-xs text-gray-600">{stop.stopCode}</p>
-                    </div>
-                    {stop._id === busStop._id && (
-                      <span className="bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full">You</span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-4 p-4 bg-green-50 border-2 border-green-200 rounded-xl">
