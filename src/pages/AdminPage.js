@@ -1,7 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit } from 'lucide-react';
+import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle } from 'lucide-react';
 import api from '../services/api';
+
+// ✅ FIX: Inline toast notification instead of browser alert()
+const Toast = ({ message, type, onClose }) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 3500);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  return (
+    <div className={`fixed top-4 right-4 z-[100] flex items-center gap-3 px-5 py-4 rounded-xl shadow-2xl text-white font-semibold transition-all animate-slide-in ${
+      type === 'success' ? 'bg-green-600' : 'bg-red-600'
+    }`}>
+      {type === 'success' ? <CheckCircle size={20} /> : <AlertCircle size={20} />}
+      <span>{message}</span>
+      <button onClick={onClose} className="ml-2 opacity-75 hover:opacity-100">
+        <X size={16} />
+      </button>
+    </div>
+  );
+};
 
 const AdminPage = () => {
   const { user, logout } = useAuth();
@@ -19,99 +39,95 @@ const AdminPage = () => {
   const [formData, setFormData] = useState({});
   const [showAssignDriverModal, setShowAssignDriverModal] = useState(false);
   const [selectedBusForDriver, setSelectedBusForDriver] = useState(null);
+  const [toast, setToast] = useState(null);
 
+  const showToast = useCallback((message, type = 'success') => {
+    setToast({ message, type });
+  }, []);
+
+  const hideToast = useCallback(() => setToast(null), []);
+
+  // ✅ FIX: Fetch shared data (routes, stops, drivers) only once on mount,
+  // not on every tab change. Tab-specific data fetches separately.
   useEffect(() => {
-    fetchData();
-    fetchDrivers();
-    fetchAllRoutes();
-    fetchAllStops();
-    if (activeTab === 'drivers') {
-      fetchAllUsers();
-    }
+    fetchSharedData();
+  }, []);
+
+  // ✅ FIX: Only fetch tab-specific data when the tab changes
+  useEffect(() => {
+    fetchTabData();
   }, [activeTab]);
 
-  const fetchData = async () => {
+  const fetchSharedData = async () => {
+    try {
+      const [routesRes, stopsRes, driversRes] = await Promise.all([
+        api.get('/routes').catch(() => ({ data: { routes: [] } })),
+        api.get('/bus-stops').catch(() => ({ data: { busStops: [] } })),
+        fetchDriversData()
+      ]);
+      setRoutes(routesRes.data.routes || []);
+      setBusStops(stopsRes.data.busStops || []);
+    } catch (error) {
+      console.error('Shared data fetch error:', error);
+    }
+  };
+
+  const fetchDriversData = async () => {
+    try {
+      try {
+        const res = await api.get('/users/drivers');
+        const driverList = res.data.drivers || [];
+        setDrivers(driverList);
+        return driverList;
+      } catch {
+        const res = await api.get('/users');
+        const users = res.data.users || res.data || [];
+        const driverList = users.filter(u => u.role === 'driver');
+        setDrivers(driverList);
+        return driverList;
+      }
+    } catch (error) {
+      console.error('Fetch drivers error:', error);
+      setDrivers([]);
+      return [];
+    }
+  };
+
+  const fetchTabData = async () => {
     setLoading(true);
     try {
       if (activeTab === 'buses') {
         const res = await api.get('/buses');
-        setBuses(res.data.buses);
+        setBuses(res.data.buses || []);
       } else if (activeTab === 'routes') {
         const res = await api.get('/routes');
-        setRoutes(res.data.routes);
+        setRoutes(res.data.routes || []);
       } else if (activeTab === 'stops') {
         const res = await api.get('/bus-stops');
-        setBusStops(res.data.busStops);
+        setBusStops(res.data.busStops || []);
       } else if (activeTab === 'drivers') {
         await fetchAllUsers();
       }
     } catch (error) {
-      console.error('Fetch error:', error);
+      console.error('Tab data fetch error:', error);
     } finally {
       setLoading(false);
     }
   };
 
   const fetchAllUsers = async () => {
-    setLoading(true);
     try {
-      // Try different endpoints that might exist on your backend
-      let res;
       try {
-        // First try to get only drivers
-        res = await api.get('/users/drivers');
-        console.log('Drivers from /users/drivers:', res.data);
+        const res = await api.get('/users/drivers');
         setAllUsers(res.data.drivers || []);
-        return;
-      } catch (error) {
-        console.log('/users/drivers endpoint not available, trying /users');
-        try {
-          // Fallback to all users and filter drivers only
-          res = await api.get('/users');
-          console.log('Users from /users:', res.data);
-          const users = res.data.users || res.data || [];
-          // Filter to show only drivers
-          const driversOnly = users.filter(user => user.role === 'driver');
-          setAllUsers(driversOnly);
-          return;
-        } catch (error2) {
-          console.log('Could not fetch users');
-          setAllUsers([]);
-        }
+      } catch {
+        const res = await api.get('/users');
+        const users = res.data.users || res.data || [];
+        setAllUsers(users.filter(u => u.role === 'driver'));
       }
     } catch (error) {
-      console.error('Fetch users error:', error);
+      console.error('Fetch all users error:', error);
       setAllUsers([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchDrivers = async () => {
-    try {
-      const res = await api.get('/users/drivers');
-      setDrivers(res.data.drivers);
-    } catch (error) {
-      console.error('Fetch drivers error:', error);
-      setDrivers([]);
-    }
-  };
-
-  const fetchAllRoutes = async () => {
-    try {
-      const res = await api.get('/routes');
-      setRoutes(res.data.routes);
-    } catch (error) {
-      console.error('Fetch routes error:', error);
-    }
-  };
-
-  const fetchAllStops = async () => {
-    try {
-      const res = await api.get('/bus-stops');
-      setBusStops(res.data.busStops);
-    } catch (error) {
-      console.error('Fetch stops error:', error);
     }
   };
 
@@ -125,22 +141,20 @@ const AdminPage = () => {
         routeId: formData.routeId,
         driverId: formData.driverId || null
       };
-      
+
       if (editMode) {
         await api.put(`/buses/${editingId}`, busData);
-        alert('Bus updated successfully!');
+        showToast('Bus updated successfully!');
       } else {
         await api.post('/buses', busData);
-        alert('Bus created successfully!');
+        showToast('Bus created successfully!');
       }
-      
-      setShowModal(false);
-      setEditMode(false);
-      setEditingId(null);
-      fetchData();
-      setFormData({});
+
+      closeModal();
+      const res = await api.get('/buses');
+      setBuses(res.data.buses || []);
     } catch (error) {
-      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus`);
+      showToast(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus`, 'error');
     }
   };
 
@@ -155,22 +169,20 @@ const AdminPage = () => {
         endTime: formData.endTime,
         frequency: parseInt(formData.frequency) || 30
       };
-      
+
       if (editMode) {
         await api.put(`/routes/${editingId}`, routeData);
-        alert('Route updated successfully!');
+        showToast('Route updated successfully!');
       } else {
         await api.post('/routes', routeData);
-        alert('Route created successfully!');
+        showToast('Route created successfully!');
       }
-      
-      setShowModal(false);
-      setEditMode(false);
-      setEditingId(null);
-      fetchData();
-      setFormData({});
+
+      closeModal();
+      const res = await api.get('/routes');
+      setRoutes(res.data.routes || []);
     } catch (error) {
-      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} route`);
+      showToast(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} route`, 'error');
     }
   };
 
@@ -186,23 +198,20 @@ const AdminPage = () => {
         },
         address: formData.address
       };
-      
+
       if (editMode) {
         await api.put(`/bus-stops/${editingId}`, stopData);
-        alert('Bus stop updated successfully!');
+        showToast('Bus stop updated successfully!');
       } else {
         await api.post('/bus-stops', stopData);
-        alert('Bus stop created successfully!');
+        showToast('Bus stop created successfully!');
       }
-      
-      setShowModal(false);
-      setEditMode(false);
-      setEditingId(null);
-      fetchData();
-      fetchAllStops();
-      setFormData({});
+
+      closeModal();
+      const res = await api.get('/bus-stops');
+      setBusStops(res.data.busStops || []);
     } catch (error) {
-      alert(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus stop`);
+      showToast(error.response?.data?.message || `Failed to ${editMode ? 'update' : 'create'} bus stop`, 'error');
     }
   };
 
@@ -215,21 +224,17 @@ const AdminPage = () => {
         stops: `/bus-stops/${id}`,
         drivers: `/users/${id}`
       }[activeTab];
-      
-      console.log('Attempting to delete:', endpoint);
-      const response = await api.delete(endpoint);
-      console.log('Delete response:', response);
-      
-      fetchData();
+
+      await api.delete(endpoint);
+      showToast('Deleted successfully!');
+      fetchTabData();
+
       if (activeTab === 'drivers') {
-        fetchDrivers(); // Refresh drivers list for bus assignment
-        fetchAllUsers(); // Refresh the users list
+        fetchDriversData();
       }
-      alert('Deleted successfully!');
     } catch (error) {
-      console.error('Delete error details:', error.response || error);
       const errorMessage = error.response?.data?.message || error.message || 'Failed to delete';
-      alert(`Delete failed: ${errorMessage}\n\nCheck browser console for details.`);
+      showToast(`Delete failed: ${errorMessage}`, 'error');
     }
   };
 
@@ -241,8 +246,16 @@ const AdminPage = () => {
       link.download = `${stopName.replace(/\s+/g, '_')}-QR.png`;
       link.click();
     } catch (error) {
-      alert('Failed to download QR code');
+      showToast('Failed to download QR code', 'error');
     }
+  };
+
+  const closeModal = () => {
+    setShowModal(false);
+    setEditMode(false);
+    setEditingId(null);
+    setFormData({});
+    setModalType('');
   };
 
   const openModal = (type) => {
@@ -258,7 +271,7 @@ const AdminPage = () => {
     setEditMode(true);
     setEditingId(item._id);
     setShowModal(true);
-    
+
     if (type === 'buses') {
       setFormData({
         busNumber: item.busNumber,
@@ -289,11 +302,12 @@ const AdminPage = () => {
 
   const toggleStopSelection = (stopId) => {
     const currentStops = formData.stops || [];
-    if (currentStops.includes(stopId)) {
-      setFormData({ ...formData, stops: currentStops.filter(id => id !== stopId) });
-    } else {
-      setFormData({ ...formData, stops: [...currentStops, stopId] });
-    }
+    setFormData({
+      ...formData,
+      stops: currentStops.includes(stopId)
+        ? currentStops.filter(id => id !== stopId)
+        : [...currentStops, stopId]
+    });
   };
 
   const openAssignDriverModal = (bus) => {
@@ -303,12 +317,13 @@ const AdminPage = () => {
 
   const handleAssignDriver = async (driverId) => {
     try {
-      await api.put(`/buses/${selectedBusForDriver._id}`, { driverId: driverId });
+      await api.put(`/buses/${selectedBusForDriver._id}`, { driverId });
       setShowAssignDriverModal(false);
-      fetchData();
-      alert('Driver assigned successfully!');
+      showToast('Driver assigned successfully!');
+      const res = await api.get('/buses');
+      setBuses(res.data.buses || []);
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to assign driver');
+      showToast(error.response?.data?.message || 'Failed to assign driver', 'error');
     }
   };
 
@@ -316,15 +331,26 @@ const AdminPage = () => {
     if (!window.confirm('Are you sure you want to unassign this driver?')) return;
     try {
       await api.put(`/buses/${busId}`, { driverId: null });
-      fetchData();
-      alert('Driver unassigned successfully!');
+      showToast('Driver unassigned successfully!');
+      const res = await api.get('/buses');
+      setBuses(res.data.buses || []);
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to unassign driver');
+      showToast(error.response?.data?.message || 'Failed to unassign driver', 'error');
     }
+  };
+
+  const tabCount = {
+    buses: buses.length,
+    routes: routes.length,
+    stops: busStops.length,
+    drivers: drivers.length
   };
 
   return (
     <div className="min-h-screen bg-gray-100">
+      {/* ✅ Toast notification */}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+
       <div className="bg-white shadow-md">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
           <div>
@@ -341,29 +367,35 @@ const AdminPage = () => {
       <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="bg-white rounded-lg shadow-md mb-6">
           <div className="flex overflow-x-auto border-b">
-            <button onClick={() => setActiveTab('buses')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'buses' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
-              <Bus size={20} />
-              Buses ({buses.length})
-            </button>
-            <button onClick={() => setActiveTab('routes')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'routes' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
-              <RouteIcon size={20} />
-              Routes ({routes.length})
-            </button>
-            <button onClick={() => setActiveTab('stops')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'stops' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
-              <MapPin size={20} />
-              Bus Stops ({busStops.length})
-            </button>
-            <button onClick={() => setActiveTab('drivers')} className={`flex items-center gap-2 px-6 py-4 font-semibold transition ${activeTab === 'drivers' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-600 hover:text-gray-800'}`}>
-              <UserPlus size={20} />
-              Drivers ({drivers.length})
-            </button>
+            {[
+              { key: 'buses', label: 'Buses', icon: <Bus size={20} /> },
+              { key: 'routes', label: 'Routes', icon: <RouteIcon size={20} /> },
+              { key: 'stops', label: 'Bus Stops', icon: <MapPin size={20} /> },
+              { key: 'drivers', label: 'Drivers', icon: <UserPlus size={20} /> },
+            ].map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex items-center gap-2 px-6 py-4 font-semibold transition whitespace-nowrap ${
+                  activeTab === tab.key
+                    ? 'border-b-2 border-blue-500 text-blue-600'
+                    : 'text-gray-600 hover:text-gray-800'
+                }`}
+              >
+                {tab.icon}
+                {tab.label} ({tabCount[tab.key]})
+              </button>
+            ))}
           </div>
         </div>
 
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold">
-              {activeTab === 'buses' ? 'Manage Buses' : activeTab === 'routes' ? 'Manage Routes' : activeTab === 'stops' ? 'Manage Bus Stops' : 'Manage Drivers'}
+              {activeTab === 'buses' ? 'Manage Buses'
+                : activeTab === 'routes' ? 'Manage Routes'
+                : activeTab === 'stops' ? 'Manage Bus Stops'
+                : 'Manage Drivers'}
             </h2>
             {activeTab !== 'drivers' && (
               <button onClick={() => openModal(activeTab)} className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
@@ -379,18 +411,15 @@ const AdminPage = () => {
             </div>
           ) : (
             <div>
+              {/* BUSES TAB */}
               {activeTab === 'buses' && (
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Bus Number</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Bus Name</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Capacity</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Route</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Driver</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Status</th>
-                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
+                        {['Bus Number', 'Bus Name', 'Capacity', 'Route', 'Driver', 'Status', 'Actions'].map(h => (
+                          <th key={h} className="px-4 py-3 text-left text-sm font-semibold text-gray-700">{h}</th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -409,19 +438,26 @@ const AdminPage = () => {
                               {bus.driver ? (
                                 <div className="flex items-center gap-2">
                                   <span className="text-green-600 font-semibold">{bus.driver.name}</span>
-                                  <button onClick={() => handleUnassignDriver(bus._id)} className="text-xs text-red-600 hover:text-red-800" title="Unassign driver">
-                                    ✕
-                                  </button>
+                                  <button
+                                    onClick={() => handleUnassignDriver(bus._id)}
+                                    className="text-xs text-red-500 hover:text-red-700 font-bold"
+                                    title="Unassign driver"
+                                  >✕</button>
                                 </div>
                               ) : (
-                                <button onClick={() => openAssignDriverModal(bus)} className="flex items-center gap-1 text-blue-600 hover:text-blue-800 font-semibold text-sm">
+                                <button
+                                  onClick={() => openAssignDriverModal(bus)}
+                                  className="flex items-center gap-1 text-blue-600 hover:text-blue-800 font-semibold text-sm"
+                                >
                                   <UserPlus size={16} />
                                   Assign Driver
                                 </button>
                               )}
                             </td>
                             <td className="px-4 py-3">
-                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${bus.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                bus.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                              }`}>
                                 {bus.isActive ? 'Active' : 'Inactive'}
                               </span>
                             </td>
@@ -443,6 +479,7 @@ const AdminPage = () => {
                 </div>
               )}
 
+              {/* ROUTES TAB */}
               {activeTab === 'routes' && (
                 <div className="space-y-4">
                   {routes.length === 0 ? (
@@ -456,10 +493,13 @@ const AdminPage = () => {
                             <p className="text-sm text-gray-600 mt-1">Route Number: <span className="font-semibold">{route.routeNumber}</span></p>
                             <p className="text-sm text-gray-600">Time: {route.startTime} - {route.endTime}</p>
                             <p className="text-sm text-gray-600">Frequency: Every {route.frequency} minutes</p>
+                            {/* ✅ FIX: Removed stray + character that was in the original */}
                             <p className="text-sm text-gray-600 mt-2">
                               Stops: {route.stops?.length || 0}
                               {route.stops?.length > 0 && (
-                                <span className="text-xs text-blue-600 ml-2">({route.stops.map(s => s.stopName).join(' → ')})</span>
+                                <span className="text-xs text-blue-600 ml-2">
+                                  ({route.stops.map(s => s.stopName).join(' → ')})
+                                </span>
                               )}
                             </p>
                           </div>
@@ -474,10 +514,11 @@ const AdminPage = () => {
                         </div>
                       </div>
                     ))
-                  )}+
+                  )}
                 </div>
               )}
 
+              {/* STOPS TAB */}
               {activeTab === 'stops' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {busStops.length === 0 ? (
@@ -487,11 +528,18 @@ const AdminPage = () => {
                       <div key={stop._id} className="border rounded-lg p-4 hover:shadow-md transition">
                         <h3 className="font-semibold text-lg mb-2 text-gray-800">{stop.stopName}</h3>
                         <p className="text-sm text-gray-600 mb-2">Code: <span className="font-semibold">{stop.stopCode}</span></p>
-                        <p className="text-xs text-gray-500 mb-3">📍 {stop.location.latitude.toFixed(4)}, {stop.location.longitude.toFixed(4)}</p>
+                        <p className="text-xs text-gray-500 mb-3">
+                          📍 {stop.location.latitude.toFixed(4)}, {stop.location.longitude.toFixed(4)}
+                        </p>
                         {stop.address && <p className="text-xs text-gray-500 mb-3">{stop.address}</p>}
-                        {stop.qrCode && <img src={stop.qrCode} alt="QR Code" className="w-32 h-32 mb-3 mx-auto border rounded" />}
+                        {stop.qrCode && (
+                          <img src={stop.qrCode} alt="QR Code" className="w-32 h-32 mb-3 mx-auto border rounded" />
+                        )}
                         <div className="flex gap-2">
-                          <button onClick={() => downloadQRCode(stop._id, stop.stopName)} className="flex-1 flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded text-sm transition">
+                          <button
+                            onClick={() => downloadQRCode(stop._id, stop.stopName)}
+                            className="flex-1 flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded text-sm transition"
+                          >
                             <Download size={16} />
                             QR
                           </button>
@@ -508,58 +556,56 @@ const AdminPage = () => {
                 </div>
               )}
 
+              {/* DRIVERS TAB */}
               {activeTab === 'drivers' && (
-                <div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-50">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['Name', 'Email', 'Phone', 'Assigned Bus', 'Actions'].map(h => (
+                          <th key={h} className="px-4 py-3 text-left text-sm font-semibold text-gray-700">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {allUsers.length === 0 && drivers.length === 0 ? (
                         <tr>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Name</th>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Email</th>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Phone</th>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Assigned Bus</th>
-                          <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
+                          <td colSpan="5" className="px-4 py-8 text-center text-gray-500">
+                            No drivers found. Register drivers at the /register page.
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {allUsers.length === 0 && drivers.length === 0 ? (
-                          <tr>
-                            <td colSpan="5" className="px-4 py-8 text-center text-gray-500">
-                              No drivers found. Register drivers at the /register page.
-                            </td>
-                          </tr>
-                        ) : (
-                          (allUsers.length > 0 ? allUsers : drivers).map((userItem) => {
-                            const assignedBus = buses.find(bus => bus.driver?._id === userItem._id);
-                            return (
-                              <tr key={userItem._id} className="hover:bg-gray-50">
-                                <td className="px-4 py-3 font-semibold">{userItem.name}</td>
-                                <td className="px-4 py-3">{userItem.email}</td>
-                                <td className="px-4 py-3">{userItem.phone || 'N/A'}</td>
-                                <td className="px-4 py-3">
-                                  {assignedBus ? (
-                                    <span className="text-green-600 font-semibold">{assignedBus.busName} ({assignedBus.busNumber})</span>
-                                  ) : (
-                                    <span className="text-gray-400">Not assigned</span>
-                                  )}
-                                </td>
-                                <td className="px-4 py-3">
-                                  {userItem._id !== user._id && (
-                                    <button onClick={() => handleDelete(userItem._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
-                                      <Trash2 size={18} />
-                                    </button>
-                                  )}
-                                  {userItem._id === user._id && (
-                                    <span className="text-xs text-gray-400">You</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                      ) : (
+                        (allUsers.length > 0 ? allUsers : drivers).map((userItem) => {
+                          const assignedBus = buses.find(bus => bus.driver?._id === userItem._id);
+                          return (
+                            <tr key={userItem._id} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 font-semibold">{userItem.name}</td>
+                              <td className="px-4 py-3">{userItem.email}</td>
+                              <td className="px-4 py-3">{userItem.phone || 'N/A'}</td>
+                              <td className="px-4 py-3">
+                                {assignedBus ? (
+                                  <span className="text-green-600 font-semibold">
+                                    {assignedBus.busName} ({assignedBus.busNumber})
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">Not assigned</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {userItem._id !== user._id ? (
+                                  <button onClick={() => handleDelete(userItem._id)} className="text-red-600 hover:text-red-800 transition" title="Delete">
+                                    <Trash2 size={18} />
+                                  </button>
+                                ) : (
+                                  <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">You</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -567,36 +613,42 @@ const AdminPage = () => {
         </div>
       </div>
 
+      {/* CREATE/EDIT MODAL */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">
-                {editMode ? 'Edit' : 'Add New'} {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
+                {editMode ? 'Edit' : 'Add New'}{' '}
+                {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
               </h3>
-              <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-gray-700">
+              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700">
                 <X size={24} />
               </button>
             </div>
-            
-            <form onSubmit={modalType === 'buses' ? handleCreateOrUpdateBus : modalType === 'routes' ? handleCreateOrUpdateRoute : handleCreateOrUpdateStop}>
+
+            <form onSubmit={
+              modalType === 'buses' ? handleCreateOrUpdateBus
+                : modalType === 'routes' ? handleCreateOrUpdateRoute
+                : handleCreateOrUpdateStop
+            }>
               {modalType === 'buses' && (
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Bus Number *</label>
-                    <input type="text" placeholder="e.g., TN001" value={formData.busNumber || ''} onChange={(e) => setFormData({...formData, busNumber: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., TN001" value={formData.busNumber || ''} onChange={(e) => setFormData({ ...formData, busNumber: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Bus Name *</label>
-                    <input type="text" placeholder="e.g., Express Bus 1" value={formData.busName || ''} onChange={(e) => setFormData({...formData, busName: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., Express Bus 1" value={formData.busName || ''} onChange={(e) => setFormData({ ...formData, busName: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Capacity (Seats) *</label>
-                    <input type="number" placeholder="e.g., 50" min="1" value={formData.capacity || ''} onChange={(e) => setFormData({...formData, capacity: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="number" placeholder="e.g., 50" min="1" value={formData.capacity || ''} onChange={(e) => setFormData({ ...formData, capacity: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Assign Route *</label>
-                    <select value={formData.routeId || ''} onChange={(e) => setFormData({...formData, routeId: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
+                    <select value={formData.routeId || ''} onChange={(e) => setFormData({ ...formData, routeId: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
                       <option value="">Select a route</option>
                       {routes.map(route => (
                         <option key={route._id} value={route._id}>{route.routeName} ({route.routeNumber})</option>
@@ -606,43 +658,46 @@ const AdminPage = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Assign Driver (Optional)</label>
-                    <select value={formData.driverId || ''} onChange={(e) => setFormData({...formData, driverId: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none">
+                    <select value={formData.driverId || ''} onChange={(e) => setFormData({ ...formData, driverId: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none">
                       <option value="">No driver assigned</option>
                       {drivers.map(driver => (
                         <option key={driver._id} value={driver._id}>{driver.name} ({driver.email})</option>
                       ))}
                     </select>
-                    {drivers.length === 0 && <p className="text-sm text-gray-500 mt-1">💡 No drivers registered. Register drivers at /register page.</p>}
+                    {drivers.length === 0 && <p className="text-sm text-gray-500 mt-1">💡 No drivers registered yet.</p>}
                   </div>
                 </div>
               )}
-              
+
               {modalType === 'routes' && (
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Route Name *</label>
-                    <input type="text" placeholder="e.g., City Center to Airport" value={formData.routeName || ''} onChange={(e) => setFormData({...formData, routeName: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., City Center to Airport" value={formData.routeName || ''} onChange={(e) => setFormData({ ...formData, routeName: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Route Number *</label>
-                    <input type="text" placeholder="e.g., R001" value={formData.routeNumber || ''} onChange={(e) => setFormData({...formData, routeNumber: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., R001" value={formData.routeNumber || ''} onChange={(e) => setFormData({ ...formData, routeNumber: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">Start Time *</label>
-                      <input type="time" value={formData.startTime || ''} onChange={(e) => setFormData({...formData, startTime: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                      <input type="time" value={formData.startTime || ''} onChange={(e) => setFormData({ ...formData, startTime: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                     </div>
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">End Time *</label>
-                      <input type="time" value={formData.endTime || ''} onChange={(e) => setFormData({...formData, endTime: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                      <input type="time" value={formData.endTime || ''} onChange={(e) => setFormData({ ...formData, endTime: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                     </div>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Frequency (minutes)</label>
-                    <input type="number" placeholder="e.g., 30" min="5" value={formData.frequency || '30'} onChange={(e) => setFormData({...formData, frequency: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
+                    <input type="number" placeholder="e.g., 30" min="5" value={formData.frequency || '30'} onChange={(e) => setFormData({ ...formData, frequency: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
                   </div>
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Select Bus Stops (in order) {formData.stops?.length > 0 && `(${formData.stops.length} selected)`}</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Select Bus Stops (in order)
+                      {formData.stops?.length > 0 && ` (${formData.stops.length} selected)`}
+                    </label>
                     <div className="border-2 border-gray-300 rounded-lg p-4 max-h-60 overflow-y-auto">
                       {busStops.length === 0 ? (
                         <p className="text-sm text-red-600">⚠️ Create bus stops first!</p>
@@ -650,7 +705,12 @@ const AdminPage = () => {
                         <div className="space-y-2">
                           {busStops.map((stop) => (
                             <label key={stop._id} className="flex items-center p-2 hover:bg-gray-50 rounded cursor-pointer">
-                              <input type="checkbox" checked={(formData.stops || []).includes(stop._id)} onChange={() => toggleStopSelection(stop._id)} className="mr-3 h-5 w-5" />
+                              <input
+                                type="checkbox"
+                                checked={(formData.stops || []).includes(stop._id)}
+                                onChange={() => toggleStopSelection(stop._id)}
+                                className="mr-3 h-5 w-5"
+                              />
                               <div>
                                 <span className="font-semibold">{stop.stopName}</span>
                                 <span className="text-sm text-gray-500 ml-2">({stop.stopCode})</span>
@@ -668,36 +728,39 @@ const AdminPage = () => {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Stop Name *</label>
-                    <input type="text" placeholder="e.g., Central Station" value={formData.stopName || ''} onChange={(e) => setFormData({...formData, stopName: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., Central Station" value={formData.stopName || ''} onChange={(e) => setFormData({ ...formData, stopName: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Stop Code *</label>
-                    <input type="text" placeholder="e.g., CS001" value={formData.stopCode || ''} onChange={(e) => setFormData({...formData, stopCode: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    <input type="text" placeholder="e.g., CS001" value={formData.stopCode || ''} onChange={(e) => setFormData({ ...formData, stopCode: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">Latitude *</label>
-                      <input type="number" step="any" placeholder="e.g., 11.0168" value={formData.latitude || ''} onChange={(e) => setFormData({...formData, latitude: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                      <input type="number" step="any" placeholder="e.g., 11.0168" value={formData.latitude || ''} onChange={(e) => setFormData({ ...formData, latitude: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                     </div>
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">Longitude *</label>
-                      <input type="number" step="any" placeholder="e.g., 76.9558" value={formData.longitude || ''} onChange={(e) => setFormData({...formData, longitude: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                      <input type="number" step="any" placeholder="e.g., 76.9558" value={formData.longitude || ''} onChange={(e) => setFormData({ ...formData, longitude: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
                     </div>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Address</label>
-                    <textarea placeholder="e.g., Near City Mall, Main Road" rows="3" value={formData.address || ''} onChange={(e) => setFormData({...formData, address: e.target.value})} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
+                    <textarea placeholder="e.g., Near City Mall, Main Road" rows="3" value={formData.address || ''} onChange={(e) => setFormData({ ...formData, address: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
                   </div>
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                    <p className="text-sm text-blue-800">💡 <strong>Tip:</strong> You can use Google Maps to get coordinates. Right-click on a location and select the coordinates to copy them.</p>
+                    <p className="text-sm text-blue-800">💡 <strong>Tip:</strong> Right-click on Google Maps to copy coordinates.</p>
                   </div>
                 </div>
               )}
 
               <div className="flex gap-3 mt-6">
-                <button type="button" onClick={() => setShowModal(false)} className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-4 py-3 rounded-lg transition">Cancel</button>
+                <button type="button" onClick={closeModal} className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-4 py-3 rounded-lg transition">
+                  Cancel
+                </button>
                 <button type="submit" className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-semibold px-4 py-3 rounded-lg transition">
-                  {editMode ? 'Update' : 'Create'} {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
+                  {editMode ? 'Update' : 'Create'}{' '}
+                  {modalType === 'buses' ? 'Bus' : modalType === 'routes' ? 'Route' : 'Bus Stop'}
                 </button>
               </div>
             </form>
@@ -705,6 +768,7 @@ const AdminPage = () => {
         </div>
       )}
 
+      {/* ASSIGN DRIVER MODAL */}
       {showAssignDriverModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full">
@@ -714,16 +778,22 @@ const AdminPage = () => {
                 <X size={24} />
               </button>
             </div>
-            <p className="text-gray-600 mb-4">Assign a driver to <strong>{selectedBusForDriver?.busName}</strong> ({selectedBusForDriver?.busNumber})</p>
+            <p className="text-gray-600 mb-4">
+              Assign a driver to <strong>{selectedBusForDriver?.busName}</strong> ({selectedBusForDriver?.busNumber})
+            </p>
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {drivers.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-gray-500 mb-4">No drivers available.</p>
-                  <p className="text-sm text-gray-600">Register drivers at the /register page with role "Driver".</p>
+                  <p className="text-gray-500 mb-2">No drivers available.</p>
+                  <p className="text-sm text-gray-600">Register drivers at /register with role "Driver".</p>
                 </div>
               ) : (
                 drivers.map(driver => (
-                  <button key={driver._id} onClick={() => handleAssignDriver(driver._id)} className="w-full text-left p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition">
+                  <button
+                    key={driver._id}
+                    onClick={() => handleAssignDriver(driver._id)}
+                    className="w-full text-left p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
+                  >
                     <p className="font-semibold text-gray-800">{driver.name}</p>
                     <p className="text-sm text-gray-600">{driver.email}</p>
                     {driver.phone && <p className="text-sm text-gray-500">{driver.phone}</p>}
@@ -731,7 +801,9 @@ const AdminPage = () => {
                 ))
               )}
             </div>
-            <button onClick={() => setShowAssignDriverModal(false)} className="w-full mt-4 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-4 py-2 rounded-lg transition">Cancel</button>
+            <button onClick={() => setShowAssignDriverModal(false)} className="w-full mt-4 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-4 py-2 rounded-lg transition">
+              Cancel
+            </button>
           </div>
         </div>
       )}
