@@ -1,36 +1,57 @@
-import axios from 'axios';
+import axios from "axios";
 
-// Add /api to the base URL
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
 
 const api = axios.create({
-  baseURL: `${API_URL}/api`, // ✅ FIXED: Added /api/ here
+  baseURL: `${API_URL}/api`,
   headers: {
-    'Content-Type': 'application/json'
+    "Content-Type": "application/json",
   },
-  withCredentials: true // Add this for CORS with credentials
+  withCredentials: true, // Required for CORS with credentials
+  timeout: 10000, // ✅ NEW: 10 second timeout to prevent hanging requests
 });
 
-// Add token to requests
+/* =========================
+   REQUEST INTERCEPTOR
+========================= */
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem("token");
+
+    // ✅ Attach token ONLY if present
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
     return config;
   },
-  (error) => Promise.reject(error)
+  (error) => {
+    console.error("❌ Request interceptor error:", error);
+    return Promise.reject(error);
+  }
 );
 
-// Handle response errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
+    if (error.response) {
+      console.error(`❌ API Error [${error.response.status}]:`, error.response.data);
+    } else if (error.request) {
+     
+      console.error("❌ Network Error: No response from server", error.message);
+    } else {
+      console.error("❌ Request Error:", error.message);
     }
+
+    if (
+      error.response?.status === 401 &&
+      !window.location.pathname.startsWith("/passenger")
+    ) {
+      console.warn("🔒 Unauthorized - redirecting to login");
+      localStorage.removeItem("token");
+      window.location.href = "/login";
+    }
+
     return Promise.reject(error);
   }
 );
