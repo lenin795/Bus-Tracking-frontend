@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle } from 'lucide-react';
 import api from '../services/api';
 
-// ✅ FIX: Inline toast notification instead of browser alert()
+// ✅ Toast notification
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
     const timer = setTimeout(onClose, 3500);
@@ -40,6 +40,7 @@ const AdminPage = () => {
   const [showAssignDriverModal, setShowAssignDriverModal] = useState(false);
   const [selectedBusForDriver, setSelectedBusForDriver] = useState(null);
   const [toast, setToast] = useState(null);
+  const [draggedIndex, setDraggedIndex] = useState(null); // ✅ NEW: For drag-and-drop
 
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
@@ -47,13 +48,10 @@ const AdminPage = () => {
 
   const hideToast = useCallback(() => setToast(null), []);
 
-  // ✅ FIX: Fetch shared data (routes, stops, drivers) only once on mount,
-  // not on every tab change. Tab-specific data fetches separately.
   useEffect(() => {
     fetchSharedData();
   }, []);
 
-  // ✅ FIX: Only fetch tab-specific data when the tab changes
   useEffect(() => {
     fetchTabData();
   }, [activeTab]);
@@ -300,14 +298,58 @@ const AdminPage = () => {
     }
   };
 
-  const toggleStopSelection = (stopId) => {
+  // ✅ NEW: Stop management functions
+  const addStopToRoute = (stopId) => {
     const currentStops = formData.stops || [];
-    setFormData({
-      ...formData,
-      stops: currentStops.includes(stopId)
-        ? currentStops.filter(id => id !== stopId)
-        : [...currentStops, stopId]
-    });
+    setFormData({ ...formData, stops: [...currentStops, stopId] });
+  };
+
+  const removeStopFromRoute = (index) => {
+    const currentStops = formData.stops || [];
+    const newStops = currentStops.filter((_, i) => i !== index);
+    setFormData({ ...formData, stops: newStops });
+  };
+
+  const moveStopUp = (index) => {
+    if (index === 0) return;
+    const currentStops = [...(formData.stops || [])];
+    [currentStops[index - 1], currentStops[index]] = [currentStops[index], currentStops[index - 1]];
+    setFormData({ ...formData, stops: currentStops });
+  };
+
+  const moveStopDown = (index) => {
+    const currentStops = [...(formData.stops || [])];
+    if (index === currentStops.length - 1) return;
+    [currentStops[index], currentStops[index + 1]] = [currentStops[index + 1], currentStops[index]];
+    setFormData({ ...formData, stops: currentStops });
+  };
+
+  const handleDragStart = (e, index) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e, dropIndex) => {
+    e.preventDefault();
+    
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null);
+      return;
+    }
+
+    const currentStops = [...(formData.stops || [])];
+    const draggedStop = currentStops[draggedIndex];
+    
+    currentStops.splice(draggedIndex, 1);
+    currentStops.splice(dropIndex, 0, draggedStop);
+    
+    setFormData({ ...formData, stops: currentStops });
+    setDraggedIndex(null);
   };
 
   const openAssignDriverModal = (bus) => {
@@ -348,7 +390,6 @@ const AdminPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* ✅ Toast notification */}
       {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
 
       <div className="bg-white shadow-md">
@@ -493,7 +534,6 @@ const AdminPage = () => {
                             <p className="text-sm text-gray-600 mt-1">Route Number: <span className="font-semibold">{route.routeNumber}</span></p>
                             <p className="text-sm text-gray-600">Time: {route.startTime} - {route.endTime}</p>
                             <p className="text-sm text-gray-600">Frequency: Every {route.frequency} minutes</p>
-                            {/* ✅ FIX: Removed stray + character that was in the original */}
                             <p className="text-sm text-gray-600 mt-2">
                               Stops: {route.stops?.length || 0}
                               {route.stops?.length > 0 && (
@@ -693,32 +733,139 @@ const AdminPage = () => {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Frequency (minutes)</label>
                     <input type="number" placeholder="e.g., 30" min="5" value={formData.frequency || '30'} onChange={(e) => setFormData({ ...formData, frequency: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
                   </div>
+                  
+                  {/* ✅ NEW: Ordered Stop Selection */}
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Select Bus Stops (in order)
-                      {formData.stops?.length > 0 && ` (${formData.stops.length} selected)`}
+                      Add Bus Stops in Order
+                      {formData.stops?.length > 0 && ` (${formData.stops.length} stops)`}
                     </label>
-                    <div className="border-2 border-gray-300 rounded-lg p-4 max-h-60 overflow-y-auto">
-                      {busStops.length === 0 ? (
-                        <p className="text-sm text-red-600">⚠️ Create bus stops first!</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {busStops.map((stop) => (
-                            <label key={stop._id} className="flex items-center p-2 hover:bg-gray-50 rounded cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={(formData.stops || []).includes(stop._id)}
-                                onChange={() => toggleStopSelection(stop._id)}
-                                className="mr-3 h-5 w-5"
-                              />
-                              <div>
-                                <span className="font-semibold">{stop.stopName}</span>
-                                <span className="text-sm text-gray-500 ml-2">({stop.stopCode})</span>
-                              </div>
-                            </label>
-                          ))}
-                        </div>
-                      )}
+                    
+                    {/* Available Stops */}
+                    <div className="mb-4">
+                      <p className="text-sm text-gray-600 mb-2">📍 Available Stops (click to add):</p>
+                      <div className="border-2 border-gray-300 rounded-lg p-3 max-h-40 overflow-y-auto bg-gray-50">
+                        {busStops.length === 0 ? (
+                          <p className="text-sm text-red-600">⚠️ Create bus stops first!</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {busStops
+                              .filter(stop => !(formData.stops || []).includes(stop._id))
+                              .map((stop) => (
+                                <button
+                                  key={stop._id}
+                                  type="button"
+                                  onClick={() => addStopToRoute(stop._id)}
+                                  className="px-3 py-2 bg-white border-2 border-gray-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition text-sm font-semibold"
+                                >
+                                  + {stop.stopName}
+                                </button>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Ordered Stops List */}
+                    <div>
+                      <p className="text-sm text-gray-600 mb-2">
+                        🚏 Route Order (drag to reorder, use arrows, or click ✕ to remove):
+                      </p>
+                      <div className="border-2 border-blue-300 rounded-lg p-3 min-h-[120px] bg-blue-50">
+                        {(!formData.stops || formData.stops.length === 0) ? (
+                          <div className="flex items-center justify-center h-20 text-gray-400">
+                            <p className="text-sm">No stops added yet. Click stops above to add them.</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {formData.stops.map((stopId, index) => {
+                              const stop = busStops.find(s => s._id === stopId);
+                              if (!stop) return null;
+                              
+                              return (
+                                <div
+                                  key={stopId}
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, index)}
+                                  onDragOver={(e) => handleDragOver(e, index)}
+                                  onDrop={(e) => handleDrop(e, index)}
+                                  className="flex items-center bg-white border-2 border-gray-300 rounded-lg p-3 cursor-move hover:border-blue-500 hover:shadow-md transition group"
+                                >
+                                  {/* Stop Number */}
+                                  <div className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-600 text-white font-bold mr-3 shrink-0">
+                                    {index + 1}
+                                  </div>
+                                  
+                                  {/* Stop Info */}
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-semibold text-gray-800 truncate">{stop.stopName}</p>
+                                    <p className="text-xs text-gray-500">{stop.stopCode}</p>
+                                  </div>
+                                  
+                                  {/* Move Up/Down Buttons */}
+                                  <div className="flex flex-col gap-1 mr-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => moveStopUp(index)}
+                                      disabled={index === 0}
+                                      className={`p-1 rounded transition ${
+                                        index === 0 
+                                          ? 'text-gray-300 cursor-not-allowed' 
+                                          : 'text-blue-600 hover:bg-blue-100'
+                                      }`}
+                                      title="Move up"
+                                    >
+                                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fillRule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clipRule="evenodd" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => moveStopDown(index)}
+                                      disabled={index === formData.stops.length - 1}
+                                      className={`p-1 rounded transition ${
+                                        index === formData.stops.length - 1
+                                          ? 'text-gray-300 cursor-not-allowed'
+                                          : 'text-blue-600 hover:bg-blue-100'
+                                      }`}
+                                      title="Move down"
+                                    >
+                                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Drag Handle */}
+                                  <div className="text-gray-400 mr-2 opacity-0 group-hover:opacity-100 transition cursor-grab active:cursor-grabbing" title="Drag to reorder">
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                      <path d="M7 2a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 2zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 8zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 14zm6-8a2 2 0 1 0-.001-4.001A2 2 0 0 0 13 6zm0 2a2 2 0 1 0 .001 4.001A2 2 0 0 0 13 8zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 13 14z"></path>
+                                    </svg>
+                                  </div>
+                                  
+                                  {/* Remove Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeStopFromRoute(index)}
+                                    className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-lg transition shrink-0"
+                                    title="Remove stop"
+                                  >
+                                    <X size={18} />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Helper Text */}
+                      <div className="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                        <p className="text-xs text-blue-800">
+                          <strong>💡 Tip:</strong> The order matters! Stop 1 → Stop 2 → Stop 3. 
+                          Drag stops up/down to reorder, use arrows, or remove and re-add them.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
