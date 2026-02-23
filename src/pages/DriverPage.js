@@ -22,59 +22,21 @@ const busIcon = new L.divIcon({
 });
 
 const routeStopIcon = new L.divIcon({
-  html: '<div style="background:#10B981;border:2px solid white;border-radius:50%;width:14px;height:14px;box-shadow:0 2px 4px rgba(0,0,0,0.2);"></div>',
+  html: '<div style="background:#10B981;border:2px solid white;border-radius:50%;width:16px;height:16px;box-shadow:0 2px 4px rgba(0,0,0,0.2);"></div>',
   className: '',
-  iconSize: [14, 14],
-  iconAnchor: [7, 7]
+  iconSize: [16, 16],
+  iconAnchor: [8, 8]
 });
 
-const firstStopIcon = new L.divIcon({
-  html: '<div style="background:#3B82F6;border:3px solid white;border-radius:50%;width:20px;height:20px;box-shadow:0 2px 6px rgba(59,130,246,0.6);"></div>',
-  className: '',
-  iconSize: [20, 20],
-  iconAnchor: [10, 10]
-});
-
-const lastStopIcon = new L.divIcon({
-  html: '<div style="background:#EF4444;border:3px solid white;border-radius:50%;width:20px;height:20px;box-shadow:0 2px 6px rgba(239,68,68,0.6);"></div>',
-  className: '',
-  iconSize: [20, 20],
-  iconAnchor: [10, 10]
-});
-
-// ─── Fit the map to all stop bounds exactly once on mount ───────────────────
-function FitBounds({ stops }) {
+// ✅ FIX: Use panTo instead of setView so the map slides smoothly
+// instead of jumping/resetting zoom on every GPS update
+function SmoothMapFollow({ center }) {
   const map = useMap();
-  const fitted = useRef(false);
-
   useEffect(() => {
-    if (fitted.current || !stops || stops.length < 2) return;
-    const bounds = L.latLngBounds(
-      stops.map(s => [s.location.latitude, s.location.longitude])
-    );
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-    fitted.current = true;
-  }, [stops, map]);
-
-  return null;
-}
-
-// ─── Pan to bus only when trip is active, and only when bus actually moves ──
-function FollowBus({ center, active }) {
-  const map = useMap();
-  const lastCenter = useRef(null);
-
-  useEffect(() => {
-    if (!active || !center) return;
-    if (lastCenter.current) {
-      const [prevLat, prevLng] = lastCenter.current;
-      // Skip pan if movement is less than ~20 metres (avoids jitter)
-      if (Math.abs(center[0] - prevLat) < 0.0002 && Math.abs(center[1] - prevLng) < 0.0002) return;
+    if (center) {
+      map.panTo(center, { animate: true, duration: 0.8 });
     }
-    map.panTo(center, { animate: true, duration: 0.8 });
-    lastCenter.current = center;
-  }, [center, active, map]);
-
+  }, [center, map]);
   return null;
 }
 
@@ -88,15 +50,15 @@ const DriverPage = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [mapType, setMapType] = useState('street');
-
-  // Array of coordinate arrays — one per consecutive stop pair
-  const [routeSegments, setRouteSegments] = useState([]);
+  const [routeCoordinates, setRouteCoordinates] = useState([]);
   const [totalRouteDistance, setTotalRouteDistance] = useState(null);
-  const [routeLoading, setRouteLoading] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
 
   const socketRef = useRef(null);
   const watchIdRef = useRef(null);
+
+  // ✅ FIX: Keep refs in sync with state so cleanup/socket callbacks
+  // always have fresh values without stale closure problems
   const busRef = useRef(null);
   const isActiveTripRef = useRef(false);
 
@@ -116,8 +78,13 @@ const DriverPage = () => {
     });
 
     socketRef.current.on('connect', () => {
+      console.log('✅ Socket connected:', socketRef.current.id);
       setSocketConnected(true);
+
+      // ✅ FIX: On reconnect, re-announce sharing if trip is active
+      // Uses ref so this always has the latest bus/trip state
       if (isActiveTripRef.current && busRef.current) {
+        console.log('🔄 Reconnected — resuming location sharing for bus:', busRef.current._id);
         socketRef.current.emit('driver:start-sharing', {
           busId: busRef.current._id,
           driverId: user.id
@@ -125,13 +92,22 @@ const DriverPage = () => {
       }
     });
 
-    socketRef.current.on('disconnect', () => setSocketConnected(false));
-    socketRef.current.on('connect_error', () => setSocketConnected(false));
+    socketRef.current.on('disconnect', (reason) => {
+      console.log('❌ Socket disconnected:', reason);
+      setSocketConnected(false);
+    });
+
+    socketRef.current.on('connect_error', (error) => {
+      console.error('🔴 Socket connection error:', error.message);
+      setSocketConnected(false);
+    });
+
     socketRef.current.on('driver:sharing-started', (data) => {
-      console.log('✅ Sharing confirmed:', data);
+      console.log('✅ Sharing confirmed by server:', data);
     });
 
     return () => {
+      // ✅ FIX: stopSharing reads from ref, not the stale closure `bus`
       stopSharingWithRef();
       if (socketRef.current) socketRef.current.disconnect();
     };
@@ -139,84 +115,51 @@ const DriverPage = () => {
   }, []);
 
   useEffect(() => {
-    if (bus?.route?.stops?.length >= 2) {
-      fetchRouteSegments(bus.route.stops);
+    if (bus?.route?.stops) {
+      fetchCompleteRouteWithRoads(bus.route.stops);
     }
   }, [bus]);
 
-  /**
-   * Fetch road geometry for each CONSECUTIVE stop pair in order:
-   *   stop[0] → stop[1],  stop[1] → stop[2], ..., stop[n-1] → stop[n]
-   *
-   * WHY per-segment (not one bulk request):
-   *   OSRM's bulk waypoint routing can reorder or shortcut through waypoints
-   *   to find the globally "optimal" path, which causes the drawn polyline
-   *   to skip stops, zigzag, or appear to go in both directions.
-   *   Fetching each pair individually guarantees:
-   *     1. Every stop is visited in the defined order
-   *     2. Each road path is the shortest between two adjacent stops
-   *     3. The overall route is strictly one-directional (start → end)
-   */
-  const fetchRouteSegments = async (stops) => {
-    setRouteLoading(true);
-    setRouteSegments([]); // clear old route while fetching
+  const fetchCompleteRouteWithRoads = async (stops) => {
+    try {
+      if (stops.length < 2) return;
 
-    const segments = [];
-    let totalKm = 0;
+      const coordinates = stops
+        .map(stop => `${stop.location.longitude},${stop.location.latitude}`)
+        .join(';');
 
-    for (let i = 0; i < stops.length - 1; i++) {
-      const from = stops[i];
-      const to   = stops[i + 1];
+      const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+      const response = await fetch(url);
+      const data = await response.json();
 
-      try {
-        const url =
-          `https://router.project-osrm.org/route/v1/driving/` +
-          `${from.location.longitude},${from.location.latitude};` +
-          `${to.location.longitude},${to.location.latitude}` +
-          `?overview=full&geometries=geojson`;
-
-        const res  = await fetch(url);
-        const data = await res.json();
-
-        if (data.code === 'Ok' && data.routes?.[0]) {
-          // OSRM returns [lng, lat] — Leaflet needs [lat, lng]
-          const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-          segments.push(coords);
-          totalKm += data.routes[0].distance / 1000;
-        } else {
-          // Fallback: straight line between the two stops
-          segments.push([
-            [from.location.latitude, from.location.longitude],
-            [to.location.latitude,   to.location.longitude]
-          ]);
-        }
-      } catch {
-        segments.push([
-          [from.location.latitude, from.location.longitude],
-          [to.location.latitude,   to.location.longitude]
-        ]);
+      if (data.code === 'Ok' && data.routes?.length > 0) {
+        const route = data.routes[0];
+        const coords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+        setRouteCoordinates(coords);
+        setTotalRouteDistance((route.distance / 1000).toFixed(2));
+      } else {
+        setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
       }
-
-      // Update segments progressively so user sees the route appear stop by stop
-      setRouteSegments([...segments]);
+    } catch (error) {
+      console.error('Error fetching route:', error);
+      setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
     }
-
-    setTotalRouteDistance(totalKm.toFixed(2));
-    setRouteLoading(false);
   };
 
   const fetchBus = async () => {
     try {
       const response = await api.get('/driver/my-bus');
       setBus(response.data.bus);
+
       try {
         const tripResponse = await api.get('/driver/current-trip');
         if (tripResponse.data.trip) {
           setTrip(tripResponse.data.trip);
+          // Resume sharing if there's already an active trip (e.g. page refresh)
           startSharing(response.data.bus);
         }
       } catch {
-        // no active trip — normal
+        // No active trip — normal
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch bus');
@@ -245,42 +188,57 @@ const DriverPage = () => {
     }
   };
 
+  // ✅ FIX: Accept bus as param so it works even before state update settles
   const startSharing = (busData) => {
     const targetBus = busData || busRef.current;
     if (!targetBus) return;
-    if (!navigator.geolocation) { setError('Geolocation not supported'); return; }
+
+    if (!navigator.geolocation) {
+      setError('Geolocation not supported by your browser');
+      return;
+    }
 
     setIsSharing(true);
+
     socketRef.current.emit('driver:start-sharing', {
       busId: targetBus._id,
       driverId: user.id
     });
 
-    let prevPosition  = null;
+    console.log('📍 Started sharing location for bus:', targetBus._id);
+
+    // ✅ FIX: Track previous position to calculate speed when GPS doesn't provide it
+    let prevPosition = null;
     let prevTimestamp = null;
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude, speed: gpsSpeed } = position.coords;
-        setLocation({ latitude, longitude, timestamp: new Date() });
 
+        const locationData = { latitude, longitude, timestamp: new Date() };
+        setLocation(locationData);
+
+        // ✅ FIX: Calculate speed from position delta if GPS doesn't provide it
         let speedKmh = gpsSpeed ? gpsSpeed * 3.6 : 0;
         if (speedKmh === 0 && prevPosition && prevTimestamp) {
-          const dtHours = (position.timestamp - prevTimestamp) / 3600000;
-          if (dtHours > 0) {
-            const R    = 6371;
-            const dLat = (latitude - prevPosition.latitude)  * Math.PI / 180;
+          const timeDeltaHours = (position.timestamp - prevTimestamp) / 3600000;
+          if (timeDeltaHours > 0) {
+            const R = 6371;
+            const dLat = (latitude - prevPosition.latitude) * Math.PI / 180;
             const dLon = (longitude - prevPosition.longitude) * Math.PI / 180;
-            const a    = Math.sin(dLat / 2) ** 2 +
+            const a = Math.sin(dLat / 2) ** 2 +
               Math.cos(prevPosition.latitude * Math.PI / 180) *
               Math.cos(latitude * Math.PI / 180) *
               Math.sin(dLon / 2) ** 2;
-            speedKmh = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) / dtHours;
+            const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            speedKmh = dist / timeDeltaHours;
           }
         }
-        prevPosition  = { latitude, longitude };
+
+        prevPosition = { latitude, longitude };
         prevTimestamp = position.timestamp;
-        setSpeed(Math.min(speedKmh, 200).toFixed(1));
+
+        setSpeed(Math.min(speedKmh, 200).toFixed(1)); // Cap at 200 km/h for display sanity
 
         if (socketRef.current?.connected) {
           socketRef.current.emit('driver:location-update', {
@@ -293,23 +251,38 @@ const DriverPage = () => {
         }
 
         api.post('/driver/save-location', {
-          busId: targetBus._id, latitude, longitude, speed: speedKmh
+          busId: targetBus._id,
+          latitude,
+          longitude,
+          speed: speedKmh
         }).catch(console.error);
       },
-      (err) => setError('Location error: ' + err.message),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      (err) => {
+        console.error('Location error:', err);
+        setError('Location error: ' + err.message);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
     );
   };
 
+  // ✅ FIX: Uses busRef.current so cleanup always has the right bus ID,
+  // even when called from useEffect cleanup where `bus` state would be stale
   const stopSharingWithRef = () => {
     if (watchIdRef.current) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+
     const currentBus = busRef.current;
     if (socketRef.current && currentBus) {
       socketRef.current.emit('driver:stop-sharing', { busId: currentBus._id });
+      console.log('🛑 Stopped sharing for bus:', currentBus._id);
     }
+
     setIsSharing(false);
   };
 
@@ -345,43 +318,8 @@ const DriverPage = () => {
     );
   }
 
-  const stops    = bus.route?.stops || [];
-  const busCenter = location ? [location.latitude, location.longitude] : null;
-
-  // Default map center = middle stop of the route
-  const defaultCenter = stops.length > 0
-    ? [
-        stops[Math.floor(stops.length / 2)].location.latitude,
-        stops[Math.floor(stops.length / 2)].location.longitude
-      ]
-    : [11.0, 78.0];
-
-  const renderStopMarker = (stop, index) => {
-    const isFirst = index === 0;
-    const isLast  = index === stops.length - 1;
-    const icon    = isFirst ? firstStopIcon : isLast ? lastStopIcon : routeStopIcon;
-    return (
-      <Marker
-        key={stop._id}
-        position={[stop.location.latitude, stop.location.longitude]}
-        icon={icon}
-      >
-        <Popup>
-          <div style={{ minWidth: 140 }}>
-            <strong>Stop {index + 1}: {stop.stopName}</strong><br />
-            <span style={{ color: '#6B7280', fontSize: 12 }}>{stop.stopCode}</span>
-            {isFirst && <><br /><span style={{ color: '#3B82F6', fontWeight: 700 }}>🟢 Start</span></>}
-            {isLast  && <><br /><span style={{ color: '#EF4444', fontWeight: 700 }}>🔴 End</span></>}
-          </div>
-        </Popup>
-      </Marker>
-    );
-  };
-
   return (
     <div className="min-h-screen bg-gray-100">
-
-      {/* ── Header ── */}
       <div className="bg-white shadow-md">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
           <div>
@@ -389,6 +327,7 @@ const DriverPage = () => {
             <p className="text-gray-600">Welcome, {user.name}</p>
           </div>
           <div className="flex items-center gap-3">
+            {/* ✅ NEW: Socket connection status indicator */}
             <div className={`flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-full ${
               socketConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
             }`}>
@@ -406,42 +345,27 @@ const DriverPage = () => {
       <div className="max-w-7xl mx-auto px-4 py-6">
         {error && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-6 flex items-center justify-between">
-            <div className="flex items-center gap-2"><AlertCircle size={20} />{error}</div>
+            <div className="flex items-center gap-2">
+              <AlertCircle size={20} />
+              {error}
+            </div>
             <button onClick={() => setError('')} className="text-red-500 hover:text-red-700">✕</button>
           </div>
         )}
 
-        {/* ── Bus Info Card ── */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <div className="flex justify-between items-start">
             <div>
               <h2 className="text-xl font-semibold text-gray-800">{bus.busName}</h2>
               <p className="text-gray-600">Bus Number: {bus.busNumber}</p>
               <p className="text-gray-600">Route: {bus.route?.routeName}</p>
-
-              {routeLoading && (
-                <p className="text-sm text-blue-500 mt-1 flex items-center gap-1.5">
-                  <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full"></span>
-                  Calculating road route...
-                </p>
-              )}
-              {totalRouteDistance && !routeLoading && (
+              {totalRouteDistance && (
                 <p className="text-sm text-blue-600 mt-1 flex items-center gap-1">
                   <RouteIcon size={14} />
-                  Total Route: {totalRouteDistance} km ({stops.length} stops)
+                  Total Route: {totalRouteDistance} km
                 </p>
               )}
-              {stops.length >= 2 && (
-                <div className="flex items-center gap-2 mt-2 text-sm text-gray-600 flex-wrap">
-                  <span className="inline-block w-3 h-3 bg-blue-500 rounded-full shrink-0"></span>
-                  <span className="font-medium">{stops[0].stopName}</span>
-                  <span className="text-gray-400">→</span>
-                  <span className="inline-block w-3 h-3 bg-red-500 rounded-full shrink-0"></span>
-                  <span className="font-medium">{stops[stops.length - 1].stopName}</span>
-                </div>
-              )}
             </div>
-
             <div className={`flex items-center gap-2 px-4 py-2 rounded-full text-white font-semibold ${
               isSharing ? 'bg-green-500' : 'bg-gray-400'
             }`}>
@@ -457,13 +381,12 @@ const DriverPage = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-          {/* ── MAP PANEL ── */}
+          {/* MAP PANEL */}
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-semibold flex items-center gap-2">
                 <MapPin className="text-blue-600" size={24} />
-                {isSharing ? 'Live Location' : 'Route Preview'}
+                Live Location
               </h2>
               <button
                 onClick={toggleMapType}
@@ -475,96 +398,53 @@ const DriverPage = () => {
               </button>
             </div>
 
-            <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
-              {stops.length >= 2 ? (
-                /**
-                 * KEY DECISIONS:
-                 *
-                 * 1. key="driver-map-stable" — never changes, so the MapContainer
-                 *    is never unmounted/remounted. Without this, React would destroy
-                 *    and recreate the map on every state change (location, speed, etc.)
-                 *    which resets zoom and center every GPS tick.
-                 *
-                 * 2. FitBounds — runs once after mount to zoom/fit all stops.
-                 *    Uses a ref flag so it only fires once even if stops prop re-renders.
-                 *
-                 * 3. FollowBus — only pans when isSharing=true AND the bus
-                 *    moves more than ~20m. Before trip start, map stays on route.
-                 *
-                 * 4. routeSegments map — renders one <Polyline> per stop pair.
-                 *    Each segment is the shortest road path between two adjacent stops,
-                 *    in the defined order, so the full drawn route is always
-                 *    stop[0]→stop[1]→...→stop[n], never reversed or doubled back.
-                 */
+            {location ? (
+              <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
                 <MapContainer
-                  key="driver-map-stable"
-                  center={defaultCenter}
-                  zoom={13}
+                  center={[location.latitude, location.longitude]}
+                  zoom={15}
                   style={{ height: '100%', width: '100%' }}
                 >
                   <TileLayer url={getTileLayerUrl()} attribution={getTileLayerAttribution()} />
 
-                  {/* Fit all stops into view once */}
-                  <FitBounds stops={stops} />
+                  {routeCoordinates.length > 0 && (
+                    <Polyline positions={routeCoordinates} color="#3B82F6" weight={5} opacity={0.7} />
+                  )}
 
-                  {/* Pan to bus only when trip is active */}
-                  <FollowBus center={busCenter} active={isSharing} />
-
-                  {/* Dashed placeholder lines while road segments are loading */}
-                  {routeLoading && stops.map((stop, i) => {
-                    if (i === stops.length - 1) return null;
-                    const next = stops[i + 1];
-                    return (
-                      <Polyline
-                        key={`placeholder-${i}`}
-                        positions={[
-                          [stop.location.latitude,  stop.location.longitude],
-                          [next.location.latitude,  next.location.longitude]
-                        ]}
-                        pathOptions={{ color: '#93C5FD', weight: 3, opacity: 0.5, dashArray: '6 8' }}
-                      />
-                    );
-                  })}
-
-                  {/* Real road segments — drawn progressively as each one loads */}
-                  {routeSegments.map((coords, i) => (
-                    <Polyline
-                      key={`segment-${i}`}
-                      positions={coords}
-                      pathOptions={{
-                        color: '#2563EB',
-                        weight: 5,
-                        opacity: 0.85,
-                        lineJoin: 'round',
-                        lineCap: 'round'
-                      }}
-                    />
-                  ))}
-
-                  {/* Stop markers */}
-                  {stops.map((stop, index) => renderStopMarker(stop, index))}
-
-                  {/* Bus marker — only when GPS is active */}
-                  {busCenter && (
-                    <Marker position={busCenter} icon={busIcon}>
+                  {bus.route?.stops?.map((stop, index) => (
+                    <Marker
+                      key={stop._id}
+                      position={[stop.location.latitude, stop.location.longitude]}
+                      icon={routeStopIcon}
+                    >
                       <Popup>
-                        <strong>{bus.busName}</strong><br />
-                        Speed: {speed} km/h<br />
-                        Status: {isSharing ? 'Live Broadcasting' : 'Offline'}
+                        <strong>Stop {index + 1}: {stop.stopName}</strong><br />
+                        {stop.stopCode}
                       </Popup>
                     </Marker>
-                  )}
-                </MapContainer>
-              ) : (
-                <div className="h-full bg-gray-100 flex flex-col items-center justify-center gap-3">
-                  <MapPin size={48} className="text-gray-300" />
-                  <p className="text-gray-500 font-semibold">No route stops configured</p>
-                  <p className="text-sm text-gray-400">Contact admin to set up route stops</p>
-                </div>
-              )}
-            </div>
+                  ))}
 
-            {/* Live stats — only when GPS is active */}
+                  {/* ✅ Bus marker position updates automatically as `location` state changes */}
+                  <Marker position={[location.latitude, location.longitude]} icon={busIcon}>
+                    <Popup>
+                      <strong>{bus.busName}</strong><br />
+                      Speed: {speed} km/h<br />
+                      Status: {isSharing ? 'Live Broadcasting' : 'Offline'}
+                    </Popup>
+                  </Marker>
+
+                  {/* ✅ FIX: Smooth pan instead of jarring setView + zoom reset */}
+                  <SmoothMapFollow center={[location.latitude, location.longitude]} />
+                </MapContainer>
+              </div>
+            ) : (
+              <div className="h-96 bg-gray-100 rounded-lg flex flex-col items-center justify-center gap-3">
+                <MapPin size={48} className="text-gray-300" />
+                <p className="text-gray-500 font-semibold">Start a trip to see your live location</p>
+                <p className="text-sm text-gray-400">GPS will activate when you start the trip</p>
+              </div>
+            )}
+
             {location && (
               <div className="mt-4 grid grid-cols-2 gap-4">
                 <div className="bg-blue-50 p-3 rounded-lg">
@@ -586,37 +466,28 @@ const DriverPage = () => {
               </div>
             )}
 
-            {/* Map legend */}
-            <div className="mt-4 p-3 bg-gray-50 rounded-lg">
-              <p className="text-xs font-semibold text-gray-700 mb-2">Map Legend:</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-7 h-1 bg-blue-600 rounded"></div>
-                  <span>Road Route {totalRouteDistance ? `(${totalRouteDistance} km)` : ''}</span>
-                </div>
-                {busCenter && (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow"></div>
+            {routeCoordinates.length > 0 && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs font-semibold text-gray-700 mb-2">Map Legend:</p>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-1 bg-blue-500 rounded"></div>
+                    <span>Road Route ({totalRouteDistance || '?'} km)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
                     <span>Your Bus</span>
                   </div>
-                )}
-                <div className="flex items-center gap-1.5">
-                  <div className="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow"></div>
-                  <span>Start Stop</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-4 h-4 bg-red-500 rounded-full border-2 border-white shadow"></div>
-                  <span>End Stop</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 bg-green-500 rounded-full border border-white"></div>
-                  <span>Stops</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span>Stops</span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* ── CONTROLS PANEL ── */}
+          {/* CONTROLS PANEL */}
           <div className="space-y-6">
             <div className="bg-white rounded-lg shadow-md p-6">
               <h2 className="text-xl font-semibold mb-4">Trip Controls</h2>
@@ -649,6 +520,7 @@ const DriverPage = () => {
                       </div>
                     )}
                   </div>
+
                   <button
                     onClick={endTrip}
                     className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-4 px-6 rounded-lg flex items-center justify-center gap-2 transition text-lg"
@@ -660,50 +532,25 @@ const DriverPage = () => {
               )}
             </div>
 
-            {stops.length > 0 && (
+            {bus.route?.stops && (
               <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-xl font-semibold mb-1">Route Stops ({stops.length})</h2>
-                {stops.length >= 2 && (
-                  <p className="text-sm text-gray-500 mb-4">
-                    {stops[0].stopName} → {stops[stops.length - 1].stopName}
-                  </p>
-                )}
+                <h2 className="text-xl font-semibold mb-4">Route Stops ({bus.route.stops.length})</h2>
                 <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {stops.map((stop, index) => {
-                    const isFirst = index === 0;
-                    const isLast  = index === stops.length - 1;
-                    return (
-                      <div
-                        key={stop._id}
-                        className={`flex items-center p-3 rounded-lg transition ${
-                          isFirst ? 'bg-blue-50 border border-blue-200'
-                          : isLast ? 'bg-red-50 border border-red-200'
-                          : 'bg-gray-50 hover:bg-gray-100'
-                        }`}
-                      >
-                        <div className={`text-white rounded-full w-8 h-8 flex items-center justify-center font-semibold mr-3 text-sm shrink-0 ${
-                          isFirst ? 'bg-blue-500' : isLast ? 'bg-red-500' : 'bg-gray-400'
-                        }`}>
-                          {index + 1}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate">{stop.stopName}</p>
-                          <p className="text-xs text-gray-600">{stop.stopCode}</p>
-                        </div>
-                        {isFirst && (
-                          <span className="text-xs font-bold text-blue-600 bg-blue-100 px-2 py-1 rounded-full shrink-0">Start</span>
-                        )}
-                        {isLast && (
-                          <span className="text-xs font-bold text-red-600 bg-red-100 px-2 py-1 rounded-full shrink-0">End</span>
-                        )}
+                  {bus.route.stops.map((stop, index) => (
+                    <div key={stop._id} className="flex items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
+                      <div className="bg-blue-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-semibold mr-3 text-sm shrink-0">
+                        {index + 1}
                       </div>
-                    );
-                  })}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold truncate">{stop.stopName}</p>
+                        <p className="text-xs text-gray-600">{stop.stopCode}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
           </div>
-
         </div>
       </div>
     </div>
