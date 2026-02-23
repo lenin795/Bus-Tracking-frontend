@@ -45,7 +45,6 @@ const nextStopIcon = new L.divIcon({
   iconAnchor: [10, 10]
 });
 
-// ✅ Passed stop icon (gray)
 const passedStopIcon = new L.divIcon({
   html: '<div style="background: #9CA3AF; border: 2px solid white; border-radius: 50%; width: 14px; height: 14px; opacity: 0.6;"></div>',
   className: '',
@@ -81,28 +80,32 @@ const PassengerPage = () => {
   const [routeDistance, setRouteDistance] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
-  
+
   // Next stop and status tracking
   const [nextStop, setNextStop] = useState(null);
   const [busStatus, setBusStatus] = useState(null);
   const [notification, setNotification] = useState(null);
-  
-  // ✅ NEW: Direction tracking
-  const [busDirection, setBusDirection] = useState(null); // 'forward' or 'reverse'
-  const [directionStops, setDirectionStops] = useState([]); // Ordered stops based on direction
-  const [destinationStop, setDestinationStop] = useState(null); // Where bus is heading
-  
-  // ✅ NEW: Distance filtering
-  const [maxDistanceKm, setMaxDistanceKm] = useState(10); // Default 10km radius
-  const [totalBusesCount, setTotalBusesCount] = useState(0); // Total buses on route (before filter)
-  
+
+  // Direction tracking
+  const [busDirection, setBusDirection] = useState(null);
+  const [directionStops, setDirectionStops] = useState([]);
+  const [destinationStop, setDestinationStop] = useState(null);
+
+  // Distance filtering
+  const [maxDistanceKm, setMaxDistanceKm] = useState(10);
+  const [totalBusesCount, setTotalBusesCount] = useState(0);
+
+  // ✅ NEW: All buses (unfiltered) + show-all toggle
+  const [allBuses, setAllBuses] = useState([]);
+  const [showAllBuses, setShowAllBuses] = useState(false);
+
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
 
   const selectedBusRef = useRef(null);
   const busStopRef = useRef(null);
   const nearestBusesRef = useRef([]);
-  const previousLocationRef = useRef(null); // Track previous position for direction calculation
+  const previousLocationRef = useRef(null);
 
   useEffect(() => { selectedBusRef.current = selectedBus; }, [selectedBus]);
   useEffect(() => { busStopRef.current = busStop; }, [busStop]);
@@ -119,7 +122,6 @@ const PassengerPage = () => {
     setNotification({ message, type });
   }, []);
 
-  // ✅ Calculate distance between two points
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -131,7 +133,6 @@ const PassengerPage = () => {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  // ✅ FIXED: Detect bus direction based on movement and user's stop position
   const detectBusDirection = useCallback((currentLocation, previousLocation, routeStops, userStop) => {
     if (!currentLocation || !previousLocation || !routeStops || routeStops.length < 2) {
       return null;
@@ -140,134 +141,75 @@ const PassengerPage = () => {
     const firstStop = routeStops[0];
     const lastStop = routeStops[routeStops.length - 1];
 
-    // Calculate distances from previous and current positions to first and last stops
     const prevDistToFirst = calculateDistance(
-      previousLocation.latitude,
-      previousLocation.longitude,
-      firstStop.location.latitude,
-      firstStop.location.longitude
+      previousLocation.latitude, previousLocation.longitude,
+      firstStop.location.latitude, firstStop.location.longitude
     );
-
     const currDistToFirst = calculateDistance(
-      currentLocation.latitude,
-      currentLocation.longitude,
-      firstStop.location.latitude,
-      firstStop.location.longitude
+      currentLocation.latitude, currentLocation.longitude,
+      firstStop.location.latitude, firstStop.location.longitude
     );
-
     const prevDistToLast = calculateDistance(
-      previousLocation.latitude,
-      previousLocation.longitude,
-      lastStop.location.latitude,
-      lastStop.location.longitude
+      previousLocation.latitude, previousLocation.longitude,
+      lastStop.location.latitude, lastStop.location.longitude
     );
-
     const currDistToLast = calculateDistance(
-      currentLocation.latitude,
-      currentLocation.longitude,
-      lastStop.location.latitude,
-      lastStop.location.longitude
+      currentLocation.latitude, currentLocation.longitude,
+      lastStop.location.latitude, lastStop.location.longitude
     );
 
-    // Primary detection: movement toward first or last stop
     const movingTowardLast = currDistToLast < prevDistToLast;
     const movingAwayFromFirst = currDistToFirst > prevDistToFirst;
     const movingTowardFirst = currDistToFirst < prevDistToFirst;
     const movingAwayFromLast = currDistToLast > prevDistToLast;
 
-    if (movingTowardLast && movingAwayFromFirst) {
-      return 'forward'; // Going from first stop to last stop (e.g., Salem → Attur)
-    } else if (movingTowardFirst && movingAwayFromLast) {
-      return 'reverse'; // Going from last stop to first stop (e.g., Attur → Salem)
-    }
+    if (movingTowardLast && movingAwayFromFirst) return 'forward';
+    if (movingTowardFirst && movingAwayFromLast) return 'reverse';
 
-    // ✅ NEW: If user is at a middle stop, use it to determine direction
     if (userStop) {
       const userStopIndex = routeStops.findIndex(s => s._id === userStop._id);
-      
       if (userStopIndex > 0 && userStopIndex < routeStops.length - 1) {
-        // User is at a middle stop, calculate distance to user's stop
         const currDistToUserStop = calculateDistance(
-          currentLocation.latitude,
-          currentLocation.longitude,
-          userStop.location.latitude,
-          userStop.location.longitude
+          currentLocation.latitude, currentLocation.longitude,
+          userStop.location.latitude, userStop.location.longitude
         );
-
         const prevDistToUserStop = calculateDistance(
-          previousLocation.latitude,
-          previousLocation.longitude,
-          userStop.location.latitude,
-          userStop.location.longitude
+          previousLocation.latitude, previousLocation.longitude,
+          userStop.location.latitude, userStop.location.longitude
         );
-
-        // ✅ Check if bus is moving toward or away from user's stop
         const movingTowardUserStop = currDistToUserStop < prevDistToUserStop;
         const movingAwayFromUserStop = currDistToUserStop > prevDistToUserStop;
 
-        // If moving toward user's middle stop
         if (movingTowardUserStop) {
-          // Check which direction the bus came from
-          if (currDistToFirst < currDistToLast) {
-            // Bus is closer to first stop → must be going forward
-            return 'forward';
-          } else {
-            // Bus is closer to last stop → must be going reverse
-            return 'reverse';
-          }
+          return currDistToFirst < currDistToLast ? 'forward' : 'reverse';
         }
-
-        // If moving away from user's middle stop
         if (movingAwayFromUserStop) {
-          // Bus has passed the middle stop, determine which way it went
-          if (currDistToLast < currDistToFirst) {
-            // Moving toward last stop → forward
-            return 'forward';
-          } else {
-            // Moving toward first stop → reverse
-            return 'reverse';
-          }
+          return currDistToLast < currDistToFirst ? 'forward' : 'reverse';
         }
       }
     }
 
-    // Fallback: check which end is closer
-    if (currDistToFirst < currDistToLast) {
-      return 'reverse'; // Closer to first stop, likely going back
-    } else {
-      return 'forward'; // Closer to last stop, likely going forward
-    }
+    return currDistToFirst < currDistToLast ? 'reverse' : 'forward';
   }, []);
 
-  // ✅ Get ordered stops based on direction
   const getDirectedStops = useCallback((stops, direction) => {
     if (!stops || stops.length === 0) return [];
-    if (direction === 'reverse') {
-      return [...stops].reverse();
-    }
-    return stops;
+    return direction === 'reverse' ? [...stops].reverse() : stops;
   }, []);
 
-  // ✅ Calculate next stop based on direction
   const calculateNextStop = useCallback((bus, userStop, orderedStops) => {
     if (!bus?.currentLocation || !orderedStops?.length) return null;
 
-    // Find closest stop ahead in the directed route
     let closestStopAhead = null;
     let minDistance = Infinity;
-
     const userStopIndex = orderedStops.findIndex(s => s._id === userStop?._id);
 
     for (let i = 0; i < orderedStops.length; i++) {
       const stop = orderedStops[i];
       const distance = calculateDistance(
-        bus.currentLocation.latitude,
-        bus.currentLocation.longitude,
-        stop.location.latitude,
-        stop.location.longitude
+        bus.currentLocation.latitude, bus.currentLocation.longitude,
+        stop.location.latitude, stop.location.longitude
       );
-
-      // Only consider stops that haven't been passed yet
       if (userStopIndex === -1 || i <= userStopIndex) {
         if (distance < minDistance) {
           minDistance = distance;
@@ -275,11 +217,9 @@ const PassengerPage = () => {
         }
       }
     }
-
     return closestStopAhead;
   }, []);
 
-  // ✅ Determine bus status relative to user's stop
   const determineBusStatus = useCallback((bus, userStop, nextStopData, orderedStops) => {
     if (!bus?.currentLocation || !userStop || !nextStopData || !orderedStops) return 'far';
 
@@ -287,22 +227,12 @@ const PassengerPage = () => {
     if (userStopIndex === -1) return 'far';
 
     const distanceToUserStop = calculateDistance(
-      bus.currentLocation.latitude,
-      bus.currentLocation.longitude,
-      userStop.location.latitude,
-      userStop.location.longitude
+      bus.currentLocation.latitude, bus.currentLocation.longitude,
+      userStop.location.latitude, userStop.location.longitude
     );
 
-    // If the next stop is past the user's stop, bus has passed
-    if (nextStopData.index > userStopIndex) {
-      return 'passed';
-    }
-
-    // If bus is within 1km of user's stop and moving toward it
-    if (distanceToUserStop <= 1 && nextStopData.index <= userStopIndex) {
-      return 'approaching';
-    }
-
+    if (nextStopData.index > userStopIndex) return 'passed';
+    if (distanceToUserStop <= 1 && nextStopData.index <= userStopIndex) return 'approaching';
     return 'far';
   }, []);
 
@@ -310,11 +240,9 @@ const PassengerPage = () => {
     setLoadingRoute(true);
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
-      
       const response = await fetch(url);
       const data = await response.json();
-      
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+      if (data.code === 'Ok' && data.routes?.length > 0) {
         const route = data.routes[0];
         const coordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
         setBusToStopRoute(coordinates);
@@ -333,28 +261,21 @@ const PassengerPage = () => {
   const fetchCompleteRouteWithRoads = useCallback(async (stops) => {
     try {
       if (stops.length < 2) return;
-      
-      const coordinates = stops.map(stop => 
+      const coordinates = stops.map(stop =>
         `${stop.location.longitude},${stop.location.latitude}`
       ).join(';');
-      
       const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
-      
       const response = await fetch(url);
       const data = await response.json();
-      
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-        const route = data.routes[0];
-        const coords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+      if (data.code === 'Ok' && data.routes?.length > 0) {
+        const coords = data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
         setRouteCoordinates(coords);
       } else {
-        const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
-        setRouteCoordinates(coords);
+        setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
       }
     } catch (error) {
       console.error('Error fetching complete route:', error);
-      const coords = stops.map(stop => [stop.location.latitude, stop.location.longitude]);
-      setRouteCoordinates(coords);
+      setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
     }
   }, []);
 
@@ -385,7 +306,7 @@ const PassengerPage = () => {
 
     socketRef.current.on('bus:location-update', (data) => {
       console.log('📍 Bus location update received:', data);
-      
+
       const currentSelectedBus = selectedBusRef.current;
       const currentBusStop = busStopRef.current;
 
@@ -405,28 +326,20 @@ const PassengerPage = () => {
           return bus;
         });
 
-        // ✅ NEW: Filter out buses that moved beyond the radius
         if (currentBusStop) {
           return updated.filter(bus => {
-            if (!bus.currentLocation) return true; // Keep buses without location
-            
+            if (!bus.currentLocation) return true;
             const distance = calculateDistance(
-              bus.currentLocation.latitude,
-              bus.currentLocation.longitude,
-              currentBusStop.location.latitude,
-              currentBusStop.location.longitude
+              bus.currentLocation.latitude, bus.currentLocation.longitude,
+              currentBusStop.location.latitude, currentBusStop.location.longitude
             );
-            
             const withinRange = distance <= maxDistanceKm;
-            
             if (!withinRange) {
               console.log(`🔴 Bus ${bus.busName} moved beyond ${maxDistanceKm}km (${distance.toFixed(2)}km), removing from list`);
             }
-            
             return withinRange;
           });
         }
-
         return updated;
       });
 
@@ -435,27 +348,20 @@ const PassengerPage = () => {
         const newLng = data.location.longitude;
         const newLocation = { latitude: newLat, longitude: newLng };
 
-        // ✅ Detect direction based on movement
         const previousLoc = previousLocationRef.current;
         if (previousLoc && currentSelectedBus.route?.stops) {
           const detectedDirection = detectBusDirection(
-            newLocation,
-            previousLoc,
+            newLocation, previousLoc,
             currentSelectedBus.route.stops,
-            currentBusStop // ✅ Pass user's stop for better detection
+            currentBusStop
           );
-          
+
           if (detectedDirection && detectedDirection !== busDirection) {
             console.log('🧭 Direction changed:', detectedDirection);
             setBusDirection(detectedDirection);
-            
-            // Update ordered stops based on new direction
             const ordered = getDirectedStops(currentSelectedBus.route.stops, detectedDirection);
             setDirectionStops(ordered);
-            
-            // Set destination (last stop in the directed route)
             setDestinationStop(ordered[ordered.length - 1]);
-            
             showNotification(
               `🧭 Bus is heading ${detectedDirection === 'forward' ? 'to' : 'back to'} ${ordered[ordered.length - 1]?.stopName}`,
               'info'
@@ -463,7 +369,6 @@ const PassengerPage = () => {
           }
         }
 
-        // Store current location as previous for next update
         previousLocationRef.current = newLocation;
 
         const updatedBus = {
@@ -478,17 +383,13 @@ const PassengerPage = () => {
         setLastUpdateTime(new Date());
 
         if (currentBusStop) {
-          // Use directed stops for calculations
           const stopsToUse = directionStops.length > 0 ? directionStops : currentSelectedBus.route?.stops;
-          
           const nextStopData = calculateNextStop(updatedBus, currentBusStop, stopsToUse);
           setNextStop(nextStopData);
 
           const status = determineBusStatus(updatedBus, currentBusStop, nextStopData, stopsToUse);
-          
           if (status !== busStatus) {
             setBusStatus(status);
-            
             if (status === 'approaching') {
               showNotification(`🚌 ${updatedBus.busName} is approaching your stop!`, 'success');
             } else if (status === 'passed') {
@@ -504,7 +405,6 @@ const PassengerPage = () => {
     socketRef.current.on('bus:offline', (data) => {
       console.log('🔴 Bus offline:', data.busId);
       setNearestBuses(prev => prev.filter(bus => bus._id !== data.busId));
-
       if (selectedBusRef.current && selectedBusRef.current._id === data.busId) {
         setError('Selected bus has gone offline');
         setSelectedBus(null);
@@ -512,9 +412,7 @@ const PassengerPage = () => {
     });
 
     const stopCode = searchParams.get('stop');
-    if (stopCode) {
-      fetchNearestBuses(stopCode);
-    }
+    if (stopCode) fetchNearestBuses(stopCode);
 
     return () => {
       if (socketRef.current) socketRef.current.disconnect();
@@ -533,14 +431,10 @@ const PassengerPage = () => {
   useEffect(() => {
     if (selectedBus?.currentLocation && busStop) {
       fetchRoadRoute(
-        selectedBus.currentLocation.latitude,
-        selectedBus.currentLocation.longitude,
-        busStop.location.latitude,
-        busStop.location.longitude
+        selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude,
+        busStop.location.latitude, busStop.location.longitude
       );
-      
       if (selectedBus.route?.stops) {
-        // Use directed stops for route visualization
         const stopsForRoute = directionStops.length > 0 ? directionStops : selectedBus.route.stops;
         fetchCompleteRouteWithRoads(stopsForRoute);
       }
@@ -607,24 +501,22 @@ const PassengerPage = () => {
       setBusStop(response.data.busStop);
 
       const buses = response.data.buses || [];
-      setTotalBusesCount(buses.length); // Track total before filtering
-      
-      // ✅ Filter buses within configured radius
+      setTotalBusesCount(buses.length);
+
+      // ✅ Save ALL buses before filtering
+      setAllBuses(buses);
+      setShowAllBuses(false);
+
       const filteredBuses = buses.filter(bus => {
         if (!bus.currentLocation || !response.data.busStop) return false;
-        
         const distance = calculateDistance(
-          bus.currentLocation.latitude,
-          bus.currentLocation.longitude,
-          response.data.busStop.location.latitude,
-          response.data.busStop.location.longitude
+          bus.currentLocation.latitude, bus.currentLocation.longitude,
+          response.data.busStop.location.latitude, response.data.busStop.location.longitude
         );
-        
         return distance <= maxDistanceKm;
       });
 
       console.log(`📍 Found ${buses.length} total buses, ${filteredBuses.length} within ${maxDistanceKm}km`);
-      
       setNearestBuses(filteredBuses);
 
       if (response.data.busStop) {
@@ -672,92 +564,61 @@ const PassengerPage = () => {
     setDirectionStops([]);
     setDestinationStop(null);
     previousLocationRef.current = bus.currentLocation || null;
-    
+
     if (bus.currentLocation) {
       setMapCenter([bus.currentLocation.latitude, bus.currentLocation.longitude]);
-      
-      // ✅ IMPROVED: Better initial direction detection
+
       if (busStop && bus.route?.stops && bus.currentLocation) {
         const firstStop = bus.route.stops[0];
         const lastStop = bus.route.stops[bus.route.stops.length - 1];
         const userStopIndex = bus.route.stops.findIndex(s => s._id === busStop._id);
-        
-        const distToFirst = calculateDistance(
-          bus.currentLocation.latitude,
-          bus.currentLocation.longitude,
-          firstStop.location.latitude,
-          firstStop.location.longitude
-        );
-        
-        const distToLast = calculateDistance(
-          bus.currentLocation.latitude,
-          bus.currentLocation.longitude,
-          lastStop.location.latitude,
-          lastStop.location.longitude
-        );
 
-        const distToUserStop = calculateDistance(
-          bus.currentLocation.latitude,
-          bus.currentLocation.longitude,
-          busStop.location.latitude,
-          busStop.location.longitude
+        const distToFirst = calculateDistance(
+          bus.currentLocation.latitude, bus.currentLocation.longitude,
+          firstStop.location.latitude, firstStop.location.longitude
+        );
+        const distToLast = calculateDistance(
+          bus.currentLocation.latitude, bus.currentLocation.longitude,
+          lastStop.location.latitude, lastStop.location.longitude
         );
 
         let initialDirection;
 
-        // ✅ If user is at first or last stop, simple detection
         if (userStopIndex === 0) {
-          // User at first stop → bus must be going forward
           initialDirection = 'forward';
         } else if (userStopIndex === bus.route.stops.length - 1) {
-          // User at last stop → bus must be going reverse
           initialDirection = 'reverse';
         } else {
-          // ✅ User at middle stop - use smart detection
-          
-          // Calculate distances to stops before and after user's stop
           const prevStopIndex = Math.max(0, userStopIndex - 1);
           const nextStopIndex = Math.min(bus.route.stops.length - 1, userStopIndex + 1);
-          
           const prevStop = bus.route.stops[prevStopIndex];
           const nextStop = bus.route.stops[nextStopIndex];
-          
+
           const distToPrevStop = calculateDistance(
-            bus.currentLocation.latitude,
-            bus.currentLocation.longitude,
-            prevStop.location.latitude,
-            prevStop.location.longitude
+            bus.currentLocation.latitude, bus.currentLocation.longitude,
+            prevStop.location.latitude, prevStop.location.longitude
           );
-          
           const distToNextStop = calculateDistance(
-            bus.currentLocation.latitude,
-            bus.currentLocation.longitude,
-            nextStop.location.latitude,
-            nextStop.location.longitude
+            bus.currentLocation.latitude, bus.currentLocation.longitude,
+            nextStop.location.latitude, nextStop.location.longitude
           );
 
-          // If bus is closer to previous stop (before user's stop) → going forward
-          // If bus is closer to next stop (after user's stop) → going reverse
           if (distToPrevStop < distToNextStop) {
             initialDirection = 'forward';
-            console.log('🧭 Middle stop detection: Bus closer to previous stop → FORWARD');
           } else if (distToNextStop < distToPrevStop) {
             initialDirection = 'reverse';
-            console.log('🧭 Middle stop detection: Bus closer to next stop → REVERSE');
           } else {
-            // Fallback: use first/last stop distance
             initialDirection = distToFirst < distToLast ? 'reverse' : 'forward';
-            console.log('🧭 Middle stop detection: Fallback to first/last comparison →', initialDirection.toUpperCase());
           }
         }
-        
-        console.log('🧭 Initial direction detected:', initialDirection, `(User at stop ${userStopIndex + 1}/${bus.route.stops.length})`);
+
+        console.log('🧭 Initial direction detected:', initialDirection);
         setBusDirection(initialDirection);
-        
+
         const ordered = getDirectedStops(bus.route.stops, initialDirection);
         setDirectionStops(ordered);
         setDestinationStop(ordered[ordered.length - 1]);
-        
+
         const nextStopData = calculateNextStop(bus, busStop, ordered);
         setNextStop(nextStopData);
         const status = determineBusStatus(bus, busStop, nextStopData, ordered);
@@ -791,6 +652,8 @@ const PassengerPage = () => {
     }
     setBusStop(null);
     setNearestBuses([]);
+    setAllBuses([]);
+    setShowAllBuses(false);
     setSelectedBus(null);
     setMapCenter(null);
     setRouteCoordinates([]);
@@ -815,10 +678,8 @@ const PassengerPage = () => {
     const distance = routeDistance
       ? parseFloat(routeDistance)
       : parseFloat(calculateDistance(
-          bus.currentLocation.latitude,
-          bus.currentLocation.longitude,
-          busStop.location.latitude,
-          busStop.location.longitude
+          bus.currentLocation.latitude, bus.currentLocation.longitude,
+          busStop.location.latitude, busStop.location.longitude
         ).toFixed(2));
     const speed = bus.speed || 30;
     if (speed < 5) return 'Bus stopped';
@@ -846,16 +707,71 @@ const PassengerPage = () => {
     return `${Math.floor(secs / 60)}m ago`;
   };
 
-  // ✅ Get display stops (ordered by direction)
   const displayStops = directionStops.length > 0 ? directionStops : selectedBus?.route?.stops || [];
+
+  // ✅ Helper: render a bus card (reused for both within-range and out-of-range)
+  const renderBusCard = (bus, isOutOfRange = false) => {
+    const distance = bus.currentLocation && busStop
+      ? calculateDistance(
+          bus.currentLocation.latitude, bus.currentLocation.longitude,
+          busStop.location.latitude, busStop.location.longitude
+        ).toFixed(2)
+      : 'N/A';
+
+    return (
+      <div
+        key={bus._id}
+        className={`border-2 rounded-xl p-4 hover:shadow-md transition cursor-pointer ${
+          isOutOfRange
+            ? 'border-orange-200 bg-orange-50 hover:border-orange-400'
+            : 'border-gray-200 hover:border-blue-500'
+        }`}
+        onClick={() => trackBus(bus)}
+      >
+        <div className="flex justify-between items-start mb-2">
+          <div>
+            <h4 className="font-bold text-lg">{bus.busName}</h4>
+            <p className="text-sm text-gray-600">{bus.busNumber}</p>
+          </div>
+          <div className={`px-3 py-1 rounded-full text-sm font-bold ${
+            isOutOfRange
+              ? 'bg-orange-100 text-orange-800'
+              : 'bg-green-100 text-green-800'
+          }`}>
+            ~{distance} km
+          </div>
+        </div>
+        <div className={`flex items-center justify-between pt-2 border-t ${
+          isOutOfRange ? 'border-orange-200' : ''
+        }`}>
+          <div className="flex items-center gap-1 text-gray-700">
+            <Clock size={16} />
+            <span className="text-sm font-semibold">{calculateETA(bus)}</span>
+          </div>
+          <button className={`font-bold text-sm ${
+            isOutOfRange
+              ? 'text-orange-600 hover:text-orange-800'
+              : 'text-blue-600 hover:text-blue-800'
+          }`}>
+            Track →
+          </button>
+        </div>
+        {isOutOfRange && (
+          <p className="text-xs text-orange-600 mt-2 font-medium">
+            📍 Outside {maxDistanceKm}km radius
+          </p>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* Notification Toast */}
       {notification && (
         <div className={`fixed top-4 right-4 z-[9999] flex items-center gap-3 px-5 py-4 rounded-xl shadow-2xl text-white font-semibold animate-slide-in ${
-          notification.type === 'success' ? 'bg-green-600' 
-            : notification.type === 'warning' ? 'bg-orange-600' 
+          notification.type === 'success' ? 'bg-green-600'
+            : notification.type === 'warning' ? 'bg-orange-600'
             : 'bg-blue-600'
         }`}>
           <Bell className="animate-bounce" size={20} />
@@ -977,6 +893,7 @@ const PassengerPage = () => {
 
         {busStop && !selectedBus && !loading && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Map Panel */}
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-800">
@@ -1038,6 +955,7 @@ const PassengerPage = () => {
               )}
             </div>
 
+            {/* Right Panel */}
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h3 className="text-xl font-bold text-gray-800 mb-4">Bus Stop Information</h3>
               <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-4 rounded-xl mb-4">
@@ -1046,7 +964,7 @@ const PassengerPage = () => {
                 {busStop.address && <p className="text-xs text-gray-500 mt-2">📍 {busStop.address}</p>}
               </div>
 
-              {/* ✅ NEW: Distance filter info */}
+              {/* Distance filter info */}
               <div className="bg-blue-50 border-2 border-blue-200 p-3 rounded-lg mb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1063,73 +981,69 @@ const PassengerPage = () => {
                 </div>
               </div>
 
+              {/* ✅ Bus List: within range OR show-all fallback */}
               {nearestBuses.length > 0 ? (
                 <>
                   <h4 className="font-semibold text-gray-700 mb-3">Nearby Buses ({nearestBuses.length})</h4>
                   <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {nearestBuses.map((bus) => {
-                      const distance = bus.currentLocation && busStop
-                        ? calculateDistance(
-                            bus.currentLocation.latitude,
-                            bus.currentLocation.longitude,
-                            busStop.location.latitude,
-                            busStop.location.longitude
-                          ).toFixed(2)
-                        : 'N/A';
-
-                      return (
-                        <div
-                          key={bus._id}
-                          className="border-2 border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition cursor-pointer"
-                          onClick={() => trackBus(bus)}
-                        >
-                          <div className="flex justify-between items-start mb-2">
-                            <div>
-                              <h4 className="font-bold text-lg">{bus.busName}</h4>
-                              <p className="text-sm text-gray-600">{bus.busNumber}</p>
-                            </div>
-                            <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
-                              ~{distance} km
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between pt-2 border-t">
-                            <div className="flex items-center gap-1 text-gray-700">
-                              <Clock size={16} />
-                              <span className="text-sm font-semibold">{calculateETA(bus)}</span>
-                            </div>
-                            <button className="text-blue-600 hover:text-blue-800 font-bold text-sm">
-                              Track →
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {nearestBuses.map(bus => renderBusCard(bus, false))}
                   </div>
                 </>
               ) : (
-                <div className="text-center py-8">
+                <div className="text-center py-6">
                   <BusIcon className="mx-auto text-gray-300 mb-4" size={64} />
                   <h4 className="font-semibold text-gray-700 mb-2">
                     {totalBusesCount > 0 ? `No Buses Within ${maxDistanceKm}km` : 'No Active Buses'}
                   </h4>
-                  <p className="text-sm text-gray-500">
-                    {totalBusesCount > 0 
-                      ? `${totalBusesCount} bus(es) on this route but all are more than ${maxDistanceKm}km away.`
+                  <p className="text-sm text-gray-500 mb-4">
+                    {totalBusesCount > 0
+                      ? `${totalBusesCount} bus(es) are on this route but farther than ${maxDistanceKm}km away.`
                       : 'Buses will appear here once drivers start their trips on this route.'}
                   </p>
-                  <div className="mt-4 p-3 bg-gray-50 rounded-lg">
-                    <p className="text-xs text-gray-600">
-                      {totalBusesCount > 0
-                        ? '💡 Buses will appear when they come within range'
-                        : '💡 This page will automatically update when buses become active'}
-                    </p>
-                  </div>
+
+                  {/* ✅ Show All Buses Toggle — only if there are buses beyond the radius */}
+                  {totalBusesCount > 0 && (
+                    <>
+                      <button
+                        onClick={() => setShowAllBuses(prev => !prev)}
+                        className="w-full bg-blue-50 hover:bg-blue-100 border-2 border-blue-300 text-blue-700 font-semibold px-4 py-3 rounded-xl transition flex items-center justify-center gap-2 mb-3"
+                      >
+                        <BusIcon size={18} />
+                        {showAllBuses
+                          ? `Hide all buses`
+                          : `Show all ${totalBusesCount} bus(es) on this route`}
+                      </button>
+
+                      {showAllBuses && (
+                        <div className="text-left">
+                          <div className="flex items-center gap-2 mb-3 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                            <AlertTriangle size={16} className="text-orange-600 shrink-0" />
+                            <p className="text-xs text-orange-700 font-medium">
+                              These buses are outside the {maxDistanceKm}km radius. You can still track them.
+                            </p>
+                          </div>
+                          <div className="space-y-3 max-h-72 overflow-y-auto">
+                            {allBuses.map(bus => renderBusCard(bus, true))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {totalBusesCount === 0 && (
+                    <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-600">
+                        💡 This page will automatically update when buses become active
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
         )}
 
+        {/* Tracking View */}
         {selectedBus && selectedBus.currentLocation && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
@@ -1161,7 +1075,7 @@ const PassengerPage = () => {
                 </div>
               </div>
 
-              {/* ✅ Direction Banner */}
+              {/* Direction Banner */}
               {busDirection && destinationStop && (
                 <div className="mb-4 p-4 rounded-xl border-2 bg-gradient-to-r from-purple-50 to-indigo-50 border-purple-300 flex items-center gap-3">
                   {busDirection === 'forward' ? <ArrowRight size={28} className="text-purple-600" /> : <ArrowLeft size={28} className="text-purple-600" />}
@@ -1212,19 +1126,17 @@ const PassengerPage = () => {
                     {routeCoordinates.length > 0 && (
                       <Polyline positions={routeCoordinates} color="#3B82F6" weight={5} opacity={0.6} />
                     )}
-
                     {busToStopRoute.length > 0 && (
                       <Polyline positions={busToStopRoute} color="#10B981" weight={6} opacity={0.9} />
                     )}
 
-                    {/* ✅ Display stops based on direction */}
                     {displayStops.map((stop) => {
                       const isUserStop = stop._id === busStop._id;
                       const isNextStop = nextStop && stop._id === nextStop._id;
                       const stopIndex = displayStops.findIndex(s => s._id === stop._id);
                       const nextStopIndex = nextStop ? nextStop.index : -1;
                       const isPassed = nextStopIndex !== -1 && stopIndex < nextStopIndex;
-                      
+
                       return (
                         <Marker
                           key={stop._id}
@@ -1298,8 +1210,7 @@ const PassengerPage = () => {
 
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h3 className="text-xl font-bold text-gray-800 mb-4">Route Progress</h3>
-              
-              {/* Destination Card */}
+
               {destinationStop && (
                 <div className="bg-gradient-to-br from-purple-50 to-indigo-50 border-2 border-purple-300 p-4 rounded-xl mb-4">
                   <div className="flex items-center gap-2 mb-2">
@@ -1311,7 +1222,6 @@ const PassengerPage = () => {
                 </div>
               )}
 
-              {/* Next Stop Card */}
               {nextStop && (
                 <div className="bg-gradient-to-br from-orange-50 to-yellow-50 border-2 border-orange-300 p-4 rounded-xl mb-4">
                   <p className="text-sm text-orange-800 font-semibold mb-1">🎯 Next Stop</p>
