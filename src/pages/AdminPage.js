@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle } from 'lucide-react';
+import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle, Activity, RefreshCw, Clock3 } from 'lucide-react';
 import api from '../services/api';
 
 // ✅ Toast notification
@@ -31,7 +31,14 @@ const AdminPage = () => {
   const [busStops, setBusStops] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
+  const [liveDashboard, setLiveDashboard] = useState({
+    stats: null,
+    liveBuses: [],
+    drivers: [],
+    generatedAt: null
+  });
   const [loading, setLoading] = useState(true);
+  const [refreshingLiveOps, setRefreshingLiveOps] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [modalType, setModalType] = useState('');
   const [editMode, setEditMode] = useState(false);
@@ -50,15 +57,29 @@ const AdminPage = () => {
 
   useEffect(() => {
     fetchSharedData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     fetchTabData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'live') return undefined;
+
+    fetchLiveDashboard({ silent: true });
+    const intervalId = setInterval(() => {
+      fetchLiveDashboard({ silent: true });
+    }, 15000);
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
   const fetchSharedData = async () => {
     try {
-      const [routesRes, stopsRes, driversRes] = await Promise.all([
+      const [routesRes, stopsRes] = await Promise.all([
         api.get('/routes').catch(() => ({ data: { routes: [] } })),
         api.get('/bus-stops').catch(() => ({ data: { busStops: [] } })),
         fetchDriversData()
@@ -94,7 +115,9 @@ const AdminPage = () => {
   const fetchTabData = async () => {
     setLoading(true);
     try {
-      if (activeTab === 'buses') {
+      if (activeTab === 'live') {
+        await fetchLiveDashboard();
+      } else if (activeTab === 'buses') {
         const res = await api.get('/buses');
         setBuses(res.data.buses || []);
       } else if (activeTab === 'routes') {
@@ -104,12 +127,41 @@ const AdminPage = () => {
         const res = await api.get('/bus-stops');
         setBusStops(res.data.busStops || []);
       } else if (activeTab === 'drivers') {
-        await fetchAllUsers();
+        const [busesRes] = await Promise.all([
+          api.get('/buses').catch(() => ({ data: { buses: [] } })),
+          fetchAllUsers()
+        ]);
+        setBuses(busesRes.data.buses || []);
       }
     } catch (error) {
       console.error('Tab data fetch error:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchLiveDashboard = async ({ silent = false } = {}) => {
+    if (silent) {
+      setRefreshingLiveOps(true);
+    }
+
+    try {
+      const res = await api.get('/users/live-dashboard');
+      setLiveDashboard({
+        stats: res.data.stats || null,
+        liveBuses: res.data.liveBuses || [],
+        drivers: res.data.drivers || [],
+        generatedAt: res.data.generatedAt || null
+      });
+    } catch (error) {
+      console.error('Fetch live dashboard error:', error);
+      if (!silent) {
+        showToast('Failed to load live operations data', 'error');
+      }
+    } finally {
+      if (silent) {
+        setRefreshingLiveOps(false);
+      }
     }
   };
 
@@ -382,11 +434,14 @@ const AdminPage = () => {
   };
 
   const tabCount = {
+    live: liveDashboard.stats?.liveBuses ?? 0,
     buses: buses.length,
     routes: routes.length,
     stops: busStops.length,
     drivers: drivers.length
   };
+
+  const liveStats = liveDashboard.stats;
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -409,6 +464,7 @@ const AdminPage = () => {
         <div className="bg-white rounded-lg shadow-md mb-6">
           <div className="flex overflow-x-auto border-b">
             {[
+              { key: 'live', label: 'Live Ops', icon: <Activity size={20} /> },
               { key: 'buses', label: 'Buses', icon: <Bus size={20} /> },
               { key: 'routes', label: 'Routes', icon: <RouteIcon size={20} /> },
               { key: 'stops', label: 'Bus Stops', icon: <MapPin size={20} /> },
@@ -433,12 +489,21 @@ const AdminPage = () => {
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold">
-              {activeTab === 'buses' ? 'Manage Buses'
+              {activeTab === 'live' ? 'Live Operations Dashboard'
+                : activeTab === 'buses' ? 'Manage Buses'
                 : activeTab === 'routes' ? 'Manage Routes'
                 : activeTab === 'stops' ? 'Manage Bus Stops'
                 : 'Manage Drivers'}
             </h2>
-            {activeTab !== 'drivers' && (
+            {activeTab === 'live' ? (
+              <button
+                onClick={() => fetchLiveDashboard({ silent: true })}
+                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg transition"
+              >
+                <RefreshCw size={18} className={refreshingLiveOps ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            ) : activeTab !== 'drivers' && (
               <button onClick={() => openModal(activeTab)} className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
                 <Plus size={20} />
                 Add New
@@ -452,6 +517,190 @@ const AdminPage = () => {
             </div>
           ) : (
             <div>
+              {activeTab === 'live' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    {[
+                      {
+                        label: 'Live Buses',
+                        value: liveStats?.liveBuses ?? 0,
+                        subtext: `${liveStats?.activeBuses ?? 0} active total`,
+                        color: 'text-green-700',
+                        bg: 'bg-green-50 border-green-200'
+                      },
+                      {
+                        label: 'Stale Signals',
+                        value: liveStats?.staleBuses ?? 0,
+                        subtext: 'Active buses not updated in 2 min',
+                        color: 'text-amber-700',
+                        bg: 'bg-amber-50 border-amber-200'
+                      },
+                      {
+                        label: 'Active Trips',
+                        value: liveStats?.activeTrips ?? 0,
+                        subtext: `${liveStats?.inactiveBuses ?? 0} buses inactive`,
+                        color: 'text-blue-700',
+                        bg: 'bg-blue-50 border-blue-200'
+                      },
+                      {
+                        label: 'Driver Coverage',
+                        value: `${liveStats?.assignedDrivers ?? 0}/${liveStats?.totalDrivers ?? 0}`,
+                        subtext: `${liveStats?.unassignedDrivers ?? 0} drivers unassigned`,
+                        color: 'text-purple-700',
+                        bg: 'bg-purple-50 border-purple-200'
+                      },
+                      {
+                        label: 'Routes',
+                        value: liveStats?.activeRoutes ?? 0,
+                        subtext: 'Currently active routes',
+                        color: 'text-cyan-700',
+                        bg: 'bg-cyan-50 border-cyan-200'
+                      },
+                      {
+                        label: 'Stops',
+                        value: liveStats?.activeStops ?? 0,
+                        subtext: 'Active stops in service',
+                        color: 'text-rose-700',
+                        bg: 'bg-rose-50 border-rose-200'
+                      }
+                    ].map((card) => (
+                      <div key={card.label} className={`border rounded-2xl p-5 ${card.bg}`}>
+                        <p className="text-sm font-semibold text-gray-600">{card.label}</p>
+                        <p className={`text-3xl font-bold mt-2 ${card.color}`}>{card.value}</p>
+                        <p className="text-xs text-gray-500 mt-2">{card.subtext}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    <div className="xl:col-span-2 border rounded-2xl overflow-hidden">
+                      <div className="px-5 py-4 bg-gray-50 border-b flex items-center justify-between">
+                        <div>
+                          <h3 className="font-semibold text-gray-800">Active Bus Feed</h3>
+                          <p className="text-sm text-gray-500">Real-time health snapshot of buses currently in service</p>
+                        </div>
+                        {liveDashboard.generatedAt && (
+                          <div className="flex items-center gap-1 text-xs text-gray-500">
+                            <Clock3 size={14} />
+                            Updated {new Date(liveDashboard.generatedAt).toLocaleTimeString()}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              {['Bus', 'Route', 'Driver', 'Tracking', 'Trip', 'Last GPS'].map((header) => (
+                                <th key={header} className="px-4 py-3 text-left text-sm font-semibold text-gray-700">{header}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200">
+                            {liveDashboard.liveBuses.length === 0 ? (
+                              <tr>
+                                <td colSpan="6" className="px-4 py-10 text-center text-gray-500">
+                                  No active buses yet. Once a driver starts a trip, it will show up here.
+                                </td>
+                              </tr>
+                            ) : (
+                              liveDashboard.liveBuses.map((busItem) => (
+                                <tr key={busItem._id} className="hover:bg-gray-50">
+                                  <td className="px-4 py-3">
+                                    <p className="font-semibold text-gray-900">{busItem.busName}</p>
+                                    <p className="text-sm text-gray-500">{busItem.busNumber}</p>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <p className="font-medium text-gray-800">{busItem.route?.routeName || 'No route'}</p>
+                                    <p className="text-sm text-gray-500">{busItem.route?.routeNumber || 'N/A'}</p>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <p className="font-medium text-gray-800">{busItem.driver?.name || 'Unassigned'}</p>
+                                    <p className="text-sm text-gray-500">{busItem.driver?.phone || busItem.driver?.email || 'No contact'}</p>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                                      busItem.trackingStatus === 'live'
+                                        ? 'bg-green-100 text-green-800'
+                                        : 'bg-amber-100 text-amber-800'
+                                    }`}>
+                                      {busItem.trackingStatus === 'live' ? 'Live signal' : 'Signal stale'}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {busItem.activeTrip ? (
+                                      <div>
+                                        <p className="font-medium text-gray-800">In progress</p>
+                                        <p className="text-sm text-gray-500">
+                                          Started {new Date(busItem.activeTrip.startTime).toLocaleTimeString()}
+                                        </p>
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-400">No active trip</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {busItem.lastUpdate ? (
+                                      <div>
+                                        <p className="text-sm font-medium text-gray-800">
+                                          {new Date(busItem.lastUpdate).toLocaleTimeString()}
+                                        </p>
+                                        <p className="text-xs text-gray-500">
+                                          {busItem.currentLocation?.latitude?.toFixed(4)}, {busItem.currentLocation?.longitude?.toFixed(4)}
+                                        </p>
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-400">No GPS yet</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="border rounded-2xl p-5 bg-gray-50">
+                      <h3 className="font-semibold text-gray-800">Driver Allocation</h3>
+                      <p className="text-sm text-gray-500 mt-1 mb-4">Quick view of who is available versus assigned</p>
+
+                      <div className="space-y-3 max-h-[30rem] overflow-y-auto">
+                        {liveDashboard.drivers.length === 0 ? (
+                          <p className="text-sm text-gray-500">No drivers found.</p>
+                        ) : (
+                          liveDashboard.drivers.map((driverItem) => {
+                            const assignedBus = liveDashboard.liveBuses.find((busItem) => busItem.driver?._id === driverItem._id)
+                              || buses.find((busItem) => busItem.driver?._id === driverItem._id);
+
+                            return (
+                              <div key={driverItem._id} className="bg-white border rounded-xl p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="font-semibold text-gray-900">{driverItem.name}</p>
+                                    <p className="text-sm text-gray-500">{driverItem.phone || driverItem.email || 'No contact info'}</p>
+                                  </div>
+                                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                                    assignedBus ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'
+                                  }`}>
+                                    {assignedBus ? 'Assigned' : 'Available'}
+                                  </span>
+                                </div>
+                                <p className="text-sm text-gray-600 mt-3">
+                                  {assignedBus
+                                    ? `${assignedBus.busName} (${assignedBus.busNumber})`
+                                    : 'Ready to be assigned to a bus'}
+                                </p>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* BUSES TAB */}
               {activeTab === 'buses' && (
                 <div className="overflow-x-auto">

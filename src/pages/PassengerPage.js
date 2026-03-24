@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { QrCode, MapPin, Clock, X, Scan, Bus as BusIcon, Navigation2, Map as MapIconLucide, Satellite, Route as RouteIcon, Bell, CheckCircle, AlertTriangle, ArrowRight, ArrowLeft } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
 import io from 'socket.io-client';
 import api from '../services/api';
 import 'leaflet/dist/leaflet.css';
@@ -104,6 +104,7 @@ const PassengerPage = () => {
 
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
+  const scannerRunningRef = useRef(false);
 
   const selectedBusRef = useRef(null);
   const busStopRef = useRef(null);
@@ -492,7 +493,12 @@ const PassengerPage = () => {
 
     return () => {
       if (socketRef.current) socketRef.current.disconnect();
-      if (scannerRef.current) scannerRef.current.clear().catch(console.error);
+      if (scannerRef.current) {
+        const scanner = scannerRef.current;
+        scannerRef.current = null;
+        scannerRunningRef.current = false;
+        scanner.clear().catch(() => {});
+      }
     };
   }, [searchParams, fetchRoadRoute, calculateNextStop, determineBusStatus, showNotification, detectBusDirection, getDirectedStops, busDirection, directionStops, maxDistanceKm]);
 
@@ -521,29 +527,70 @@ const PassengerPage = () => {
     setShowScanner(true);
     setError('');
     setScanError('');
-    setTimeout(() => {
-      const scanner = new Html5QrcodeScanner('qr-reader', {
-        fps: 10,
-        qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0,
-        showTorchButtonIfSupported: true,
-        rememberLastUsedCamera: true,
-        supportedScanTypes: [0, 1],
-        videoConstraints: { facingMode: { ideal: "environment" } },
-        formatsToSupport: [0]
-      }, false);
-      scanner.render(onScanSuccess, onScanError);
-      scannerRef.current = scanner;
+    setTimeout(async () => {
+      try {
+        const scannerContainer = document.getElementById('qr-reader');
+        if (!scannerContainer) return;
+
+        scannerContainer.innerHTML = '';
+
+        const scanner = new Html5Qrcode('qr-reader');
+        scannerRef.current = scanner;
+        const cameraDevices = await Html5Qrcode.getCameras();
+
+        if (!cameraDevices || cameraDevices.length === 0) {
+          throw new Error('No camera devices found');
+        }
+
+        const preferredCamera =
+          cameraDevices.find((camera) => /back|rear|environment/i.test(camera.label)) ||
+          cameraDevices[0];
+
+        await scanner.start(
+          preferredCamera.id,
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 250 },
+            aspectRatio: 1.0,
+            showTorchButtonIfSupported: true,
+            showZoomSliderIfSupported: true,
+          },
+          onScanSuccess,
+          onScanError
+        );
+        scannerRunningRef.current = true;
+      } catch (scanStartError) {
+        console.error('Failed to start camera scanner:', scanStartError);
+        scannerRunningRef.current = false;
+        scannerRef.current = null;
+        setScanError('Could not open the camera automatically. Please allow camera access, then try again or enter the stop code manually.');
+      }
     }, 100);
   };
 
   const stopScanner = () => {
-    if (scannerRef.current) {
-      scannerRef.current.clear().catch(console.error);
-      scannerRef.current = null;
-    }
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
     setShowScanner(false);
     setScanError('');
+
+    if (!scanner) {
+      scannerRunningRef.current = false;
+      return;
+    }
+
+    if (scannerRunningRef.current) {
+      scanner
+        .stop()
+        .catch(() => {})
+        .finally(() => {
+          scannerRunningRef.current = false;
+          scanner.clear().catch(() => {});
+        });
+    } else {
+      scannerRunningRef.current = false;
+      scanner.clear().catch(() => {});
+    }
   };
 
   const onScanSuccess = async (decodedText) => {
