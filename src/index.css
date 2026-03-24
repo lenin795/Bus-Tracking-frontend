@@ -19,3 +19,15 @@ body {
   width: 100%;
   border-radius: 12px;
 }
+
+.leaflet-container,
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom,
+.leaflet-control {
+  z-index: 1 !important;
+}
+
+.leaflet-popup {
+  z-index: 2 !important;
+}
