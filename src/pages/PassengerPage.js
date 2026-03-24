@@ -62,6 +62,9 @@ function MapUpdater({ center }) {
   return null;
 }
 
+// ✅ Normalize stop code: trim whitespace and convert to uppercase
+const normalizeStopCode = (code) => code?.trim().toUpperCase() ?? '';
+
 const PassengerPage = () => {
   const [searchParams] = useSearchParams();
   const [showScanner, setShowScanner] = useState(false);
@@ -548,8 +551,10 @@ const PassengerPage = () => {
       stopScanner();
       const url = new URL(decodedText);
       const stopCode = url.searchParams.get('stop');
+      // ✅ Normalize stop code from QR scan URL param
       if (stopCode) await fetchNearestBuses(stopCode);
     } catch {
+      // ✅ Normalize raw stop code scanned directly
       if (decodedText?.length > 0) {
         await fetchNearestBuses(decodedText);
       } else {
@@ -565,12 +570,14 @@ const PassengerPage = () => {
     }
   };
 
+  // ✅ Normalize all stop codes before API lookup (trim + uppercase)
   const fetchNearestBuses = async (stopCode) => {
+    const normalizedCode = normalizeStopCode(stopCode);
     setLoading(true);
     setError('');
     setScanError('');
     try {
-      const response = await api.get(`/passenger/nearest-buses/${stopCode}`);
+      const response = await api.get(`/passenger/nearest-buses/${normalizedCode}`);
       setBusStop(response.data.busStop);
 
       const buses = response.data.buses || [];
@@ -619,7 +626,8 @@ const PassengerPage = () => {
   const handleManualEntry = (e) => {
     e.preventDefault();
     if (manualStopCode.trim()) {
-      fetchNearestBuses(manualStopCode.trim());
+      // ✅ normalizeStopCode is applied inside fetchNearestBuses
+      fetchNearestBuses(manualStopCode);
       setShowScanner(false);
       setShowManualEntry(false);
     }
@@ -995,7 +1003,7 @@ const PassengerPage = () => {
                       type="text"
                       value={manualStopCode}
                       onChange={(e) => setManualStopCode(e.target.value)}
-                      placeholder="e.g., CS001"
+                      placeholder="e.g., CS001 or cs001"
                       className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                       required
                     />
@@ -1003,7 +1011,7 @@ const PassengerPage = () => {
                       Find
                     </button>
                   </div>
-                  <p className="text-xs text-gray-500 mt-2">💡 You can find the stop code printed on the QR code poster at your bus stop</p>
+                  <p className="text-xs text-gray-500 mt-2">💡 Stop codes are not case-sensitive — CS001, cs001, and Cs001 all work</p>
                 </form>
               )}
             </div>
