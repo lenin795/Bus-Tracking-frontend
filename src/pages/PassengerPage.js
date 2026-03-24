@@ -546,11 +546,15 @@ const PassengerPage = () => {
           cameraDevices.find((camera) => /back|rear|environment/i.test(camera.label)) ||
           cameraDevices[0];
 
+        const isLaptopOrDesktop = window.innerWidth >= 1024;
+
         await scanner.start(
           preferredCamera.id,
           {
             fps: 10,
-            qrbox: { width: 250, height: 250 },
+            qrbox: isLaptopOrDesktop
+              ? { width: 220, height: 220 }
+              : { width: 250, height: 250 },
             aspectRatio: 1.0,
             showTorchButtonIfSupported: true,
             showZoomSliderIfSupported: true,
@@ -956,20 +960,20 @@ const PassengerPage = () => {
         </div>
       )}
 
-      <div className="bg-white shadow-lg">
-        <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="bg-gradient-to-r from-sky-950 via-blue-900 to-cyan-900 shadow-lg">
+        <div className="max-w-7xl mx-auto px-4 py-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="bg-blue-600 p-2 rounded-lg">
+              <div className="bg-white/10 p-3 rounded-2xl border border-white/15">
                 <BusIcon className="text-white" size={28} />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-800">Bus Tracker</h1>
-                <p className="text-sm text-gray-600">Real-time tracking with bidirectional route detection</p>
+                <h1 className="text-3xl md:text-4xl font-bold text-white">Bus Tracker</h1>
+                <p className="text-sm md:text-base text-sky-100">Scan your stop, watch buses arrive live, and follow the route in real time.</p>
               </div>
             </div>
             {(busStop || selectedBus) && (
-              <button onClick={resetView} className="text-blue-600 hover:text-blue-800 font-semibold text-sm">
+              <button onClick={resetView} className="bg-white text-sky-900 hover:bg-sky-50 font-semibold text-sm px-4 py-2 rounded-xl transition">
                 ← Scan New Stop
               </button>
             )}
@@ -1001,19 +1005,39 @@ const PassengerPage = () => {
         )}
 
         {!busStop && !showScanner && !selectedBus && !loading && (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
-            <div className="inline-flex items-center justify-center w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full mb-6 shadow-lg">
-              <QrCode className="text-white" size={48} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white rounded-[2rem] shadow-xl p-12">
+              <div className="inline-flex items-center justify-center w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-[1.75rem] mb-6 shadow-lg">
+                <QrCode className="text-white" size={48} />
+              </div>
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">Find Your Bus Fast</h2>
+              <p className="text-gray-600 mb-8 text-lg">Scan the QR code at your bus stop and instantly see live buses, route direction, and arrival status.</p>
+              <button
+                onClick={startScanner}
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold px-10 py-4 rounded-xl inline-flex items-center gap-3 shadow-lg transform transition hover:scale-105"
+              >
+                <Scan size={24} />
+                Scan QR Code
+              </button>
             </div>
-            <h2 className="text-3xl font-bold text-gray-800 mb-3">Find Your Bus</h2>
-            <p className="text-gray-600 mb-8 text-lg">Scan the QR code at your bus stop to see incoming buses</p>
-            <button
-              onClick={startScanner}
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold px-10 py-4 rounded-xl inline-flex items-center gap-3 shadow-lg transform transition hover:scale-105"
-            >
-              <Scan size={24} />
-              Scan QR Code
-            </button>
+
+            <div className="bg-slate-900 text-white rounded-[2rem] shadow-xl p-12">
+              <p className="text-sm uppercase tracking-[0.2em] text-sky-300 mb-4">How It Works</p>
+              <div className="space-y-5">
+                <div>
+                  <p className="font-semibold text-xl">1. Scan the stop QR</p>
+                  <p className="text-slate-300 mt-1">Open your camera scanner and scan the code placed at the bus stop.</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-xl">2. See live nearby buses</p>
+                  <p className="text-slate-300 mt-1">Get active buses, current direction, route stops, and location updates.</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-xl">3. Track your ride</p>
+                  <p className="text-slate-300 mt-1">Follow the bus on the map until it reaches your stop.</p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1031,7 +1055,9 @@ const PassengerPage = () => {
                 <p>{scanError}</p>
               </div>
             )}
-            <div id="qr-reader" className="w-full"></div>
+            <div className="max-w-md mx-auto">
+              <div id="qr-reader" className="w-full"></div>
+            </div>
             <div className="mt-6 space-y-4">
               <div className="p-4 bg-blue-50 rounded-lg">
                 <p className="text-center text-blue-800 font-semibold mb-2">📱 Position the QR code within the camera frame</p>

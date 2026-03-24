@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle, Activity, RefreshCw, Clock3 } from 'lucide-react';
+import { Bus, Route as RouteIcon, MapPin, Plus, Trash2, Download, X, UserPlus, Edit, CheckCircle, AlertCircle, Activity, RefreshCw, Clock3, Camera, Menu } from 'lucide-react';
 import api from '../services/api';
 
 // ✅ Toast notification
@@ -23,9 +23,48 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
+const getInitials = (name = '') =>
+  name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'U';
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const size = 240;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, size, size);
+
+        const scale = Math.max(size / image.width, size / image.height);
+        const scaledWidth = image.width * scale;
+        const scaledHeight = image.height * scale;
+        const offsetX = (size - scaledWidth) / 2;
+        const offsetY = (size - scaledHeight) / 2;
+
+        context.drawImage(image, offsetX, offsetY, scaledWidth, scaledHeight);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      image.onerror = reject;
+      image.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
 const AdminPage = () => {
-  const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState('buses');
+  const { user, logout, updateProfile } = useAuth();
+  const [activeTab, setActiveTab] = useState('live');
   const [buses, setBuses] = useState([]);
   const [routes, setRoutes] = useState([]);
   const [busStops, setBusStops] = useState([]);
@@ -47,6 +86,8 @@ const AdminPage = () => {
   const [showAssignDriverModal, setShowAssignDriverModal] = useState(false);
   const [selectedBusForDriver, setSelectedBusForDriver] = useState(null);
   const [toast, setToast] = useState(null);
+  const [showListModal, setShowListModal] = useState(false);
+  const [listModalType, setListModalType] = useState('');
   const [draggedIndex, setDraggedIndex] = useState(null); // ✅ NEW: For drag-and-drop
 
   const showToast = useCallback((message, type = 'success') => {
@@ -54,6 +95,30 @@ const AdminPage = () => {
   }, []);
 
   const hideToast = useCallback(() => setToast(null), []);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    name: '',
+    phone: '',
+    avatarUrl: '',
+    bio: ''
+  });
+  const [externalStopResults, setExternalStopResults] = useState([]);
+  const [searchingStops, setSearchingStops] = useState(false);
+  const [externalStopSearchError, setExternalStopSearchError] = useState('');
+
+  useEffect(() => {
+    if (!user) return;
+
+    setProfileForm({
+      name: user.name || '',
+      phone: user.phone || '',
+      avatarUrl: user.avatarUrl || '',
+      bio: user.bio || ''
+    });
+  }, [user]);
 
   useEffect(() => {
     fetchSharedData();
@@ -76,6 +141,85 @@ const AdminPage = () => {
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  useEffect(() => {
+    if (modalType !== 'stops' || !showModal) {
+      setExternalStopResults([]);
+      setSearchingStops(false);
+      setExternalStopSearchError('');
+      return undefined;
+    }
+
+    const query = (formData.stopName || '').trim();
+    if (query.length < 3) {
+      setExternalStopResults([]);
+      setSearchingStops(false);
+      setExternalStopSearchError('');
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timeoutId = setTimeout(async () => {
+      setSearchingStops(true);
+      setExternalStopSearchError('');
+
+      try {
+        let results = [];
+
+        try {
+          const params = new URLSearchParams({
+            q: `${query} bus stop`,
+            format: 'jsonv2',
+            limit: '8',
+            addressdetails: '1',
+            countrycodes: 'in'
+          });
+          const publicResponse = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
+
+          if (publicResponse.ok) {
+            const publicData = await publicResponse.json();
+            results = (publicData || []).map((item) => ({
+              id: `nominatim-${item.place_id}`,
+              name: item.name || item.display_name?.split(',')[0] || query,
+              latitude: Number(item.lat),
+              longitude: Number(item.lon),
+              address: item.display_name || '',
+              locality: item.address?.city || item.address?.town || item.address?.village || item.address?.suburb || ''
+            })).filter((item) => !Number.isNaN(item.latitude) && !Number.isNaN(item.longitude));
+          }
+        } catch (publicError) {
+          console.error('Public stop lookup failed:', publicError);
+        }
+
+        if (results.length === 0) {
+          const res = await api.get('/bus-stops/external-search', {
+            params: { q: query }
+          });
+          results = res.data.results || [];
+        }
+
+        if (!cancelled) {
+          setExternalStopResults(results);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setExternalStopResults([]);
+          setExternalStopSearchError(
+            'Public bus stop lookup is unavailable right now.'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSearchingStops(false);
+        }
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [formData.stopName, modalType, showModal]);
 
   const fetchSharedData = async () => {
     try {
@@ -306,6 +450,9 @@ const AdminPage = () => {
     setEditingId(null);
     setFormData({});
     setModalType('');
+    setExternalStopResults([]);
+    setSearchingStops(false);
+    setExternalStopSearchError('');
   };
 
   const openModal = (type) => {
@@ -314,6 +461,9 @@ const AdminPage = () => {
     setEditMode(false);
     setEditingId(null);
     setFormData({});
+    setExternalStopResults([]);
+    setSearchingStops(false);
+    setExternalStopSearchError('');
   };
 
   const openEditModal = (type, item) => {
@@ -433,6 +583,71 @@ const AdminPage = () => {
     }
   };
 
+  const handleSelectExternalStop = (stop) => {
+    setFormData({
+      ...formData,
+      stopName: stop.name,
+      latitude: stop.latitude ?? '',
+      longitude: stop.longitude ?? '',
+      address: stop.address || ''
+    });
+    setExternalStopResults([]);
+    setExternalStopSearchError('');
+  };
+
+  const openProfileModal = () => {
+    setShowHeaderMenu(false);
+    setIsEditingProfile(false);
+    setShowProfileModal(true);
+  };
+
+  const closeProfileModal = () => {
+    setShowProfileModal(false);
+    setIsEditingProfile(false);
+    setProfileForm({
+      name: user?.name || '',
+      phone: user?.phone || '',
+      avatarUrl: user?.avatarUrl || '',
+      bio: user?.bio || ''
+    });
+  };
+
+  const handleProfileImageUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const imageDataUrl = await readFileAsDataUrl(file);
+      setProfileForm((prev) => ({
+        ...prev,
+        avatarUrl: imageDataUrl
+      }));
+    } catch (error) {
+      showToast('Failed to load the selected profile image', 'error');
+    }
+  };
+
+  const handleRemoveProfileImage = () => {
+    setProfileForm((prev) => ({
+      ...prev,
+      avatarUrl: ''
+    }));
+  };
+
+  const handleProfileSave = async () => {
+    setSavingProfile(true);
+
+    try {
+      await updateProfile(profileForm);
+      setIsEditingProfile(false);
+      showToast('Profile updated successfully!');
+    } catch (error) {
+      showToast(error.response?.data?.message || 'Failed to update profile', 'error');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   const tabCount = {
     live: liveDashboard.stats?.liveBuses ?? 0,
     buses: buses.length,
@@ -442,25 +657,83 @@ const AdminPage = () => {
   };
 
   const liveStats = liveDashboard.stats;
+  const visibleLiveBuses = liveDashboard.liveBuses.slice(0, 6);
+  const visibleDrivers = liveDashboard.drivers.slice(0, 6);
 
   return (
     <div className="min-h-screen bg-gray-100">
       {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
 
-      <div className="bg-white shadow-md">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
-            <p className="text-gray-600">Welcome, {user.name}</p>
+      <header className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-800 shadow-md">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={openProfileModal}
+              className="w-11 h-11 rounded-full overflow-hidden border-2 border-white/30 shadow-lg hover:scale-105 transition shrink-0"
+              title="Open profile"
+            >
+              {user?.avatarUrl ? (
+                <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-white/15 text-white flex items-center justify-center text-sm font-bold">
+                  {getInitials(user?.name)}
+                </div>
+              )}
+            </button>
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-blue-200">Control Center</p>
+              <h1 className="text-xl md:text-2xl font-bold text-white">Admin Dashboard</h1>
+              <p className="text-xs md:text-sm text-blue-100 mt-1">Manage operations, trips, buses, and drivers.</p>
+            </div>
           </div>
-          <button onClick={logout} className="flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition">
-            <LogOut size={20} />
-            Logout
-          </button>
-        </div>
-      </div>
 
-      <div className="max-w-7xl mx-auto px-4 py-6">
+          <div className="relative">
+            <button
+              onClick={() => setShowHeaderMenu((prev) => !prev)}
+              className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-white text-slate-900 hover:bg-blue-50 transition shadow-sm"
+              title="Open menu"
+            >
+              <Menu size={20} />
+            </button>
+            {showHeaderMenu && (
+              <div className="absolute right-0 mt-3 w-48 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+                <button
+                  onClick={openProfileModal}
+                  className="w-full text-left px-4 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition"
+                >
+                  Profile
+                </button>
+                <button
+                  onClick={logout}
+                  className="w-full text-left px-4 py-3 text-sm font-semibold text-red-600 hover:bg-red-50 transition"
+                >
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-7xl mx-auto px-4 pt-24 pb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="bg-white rounded-2xl shadow-md p-5">
+            <p className="text-sm font-semibold text-gray-500">Fleet Overview</p>
+            <p className="text-3xl font-bold text-gray-900 mt-2">{liveStats?.totalBuses ?? buses.length}</p>
+            <p className="text-sm text-gray-500 mt-1">Total buses configured in the system</p>
+          </div>
+          <div className="bg-white rounded-2xl shadow-md p-5">
+            <p className="text-sm font-semibold text-gray-500">Driver Readiness</p>
+            <p className="text-3xl font-bold text-gray-900 mt-2">{liveStats?.totalDrivers ?? drivers.length}</p>
+            <p className="text-sm text-gray-500 mt-1">Drivers ready to be assigned or dispatched</p>
+          </div>
+          <div className="bg-white rounded-2xl shadow-md p-5">
+            <p className="text-sm font-semibold text-gray-500">Live Signals</p>
+            <p className="text-3xl font-bold text-gray-900 mt-2">{liveStats?.liveBuses ?? 0}</p>
+            <p className="text-sm text-gray-500 mt-1">Buses sending fresh GPS updates right now</p>
+          </div>
+        </div>
+
         <div className="bg-white rounded-lg shadow-md mb-6">
           <div className="flex overflow-x-auto border-b">
             {[
@@ -579,12 +852,22 @@ const AdminPage = () => {
                           <h3 className="font-semibold text-gray-800">Active Bus Feed</h3>
                           <p className="text-sm text-gray-500">Real-time health snapshot of buses currently in service</p>
                         </div>
-                        {liveDashboard.generatedAt && (
-                          <div className="flex items-center gap-1 text-xs text-gray-500">
-                            <Clock3 size={14} />
-                            Updated {new Date(liveDashboard.generatedAt).toLocaleTimeString()}
-                          </div>
-                        )}
+                        <div className="flex items-center gap-3">
+                          {liveDashboard.liveBuses.length > 6 && (
+                            <button
+                              onClick={() => { setListModalType('buses'); setShowListModal(true); }}
+                              className="text-sm font-semibold text-blue-600 hover:text-blue-800"
+                            >
+                              View all
+                            </button>
+                          )}
+                          {liveDashboard.generatedAt && (
+                            <div className="flex items-center gap-1 text-xs text-gray-500">
+                              <Clock3 size={14} />
+                              Updated {new Date(liveDashboard.generatedAt).toLocaleTimeString()}
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       <div className="overflow-x-auto">
@@ -604,7 +887,7 @@ const AdminPage = () => {
                                 </td>
                               </tr>
                             ) : (
-                              liveDashboard.liveBuses.map((busItem) => (
+                              visibleLiveBuses.map((busItem) => (
                                 <tr key={busItem._id} className="hover:bg-gray-50">
                                   <td className="px-4 py-3">
                                     <p className="font-semibold text-gray-900">{busItem.busName}</p>
@@ -669,7 +952,16 @@ const AdminPage = () => {
                         {liveDashboard.drivers.length === 0 ? (
                           <p className="text-sm text-gray-500">No drivers found.</p>
                         ) : (
-                          liveDashboard.drivers.map((driverItem) => {
+                          <>
+                            {liveDashboard.drivers.length > 6 && (
+                              <button
+                                onClick={() => { setListModalType('drivers'); setShowListModal(true); }}
+                                className="w-full text-left text-sm font-semibold text-blue-600 hover:text-blue-800"
+                              >
+                                View all drivers
+                              </button>
+                            )}
+                            {visibleDrivers.map((driverItem) => {
                             const assignedBus = liveDashboard.liveBuses.find((busItem) => busItem.driver?._id === driverItem._id)
                               || buses.find((busItem) => busItem.driver?._id === driverItem._id);
 
@@ -693,7 +985,8 @@ const AdminPage = () => {
                                 </p>
                               </div>
                             );
-                          })
+                            })}
+                          </>
                         )}
                       </div>
                     </div>
@@ -1125,6 +1418,36 @@ const AdminPage = () => {
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Stop Name *</label>
                     <input type="text" placeholder="e.g., Central Station" value={formData.stopName || ''} onChange={(e) => setFormData({ ...formData, stopName: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                    {searchingStops && (
+                      <p className="text-xs text-blue-600 mt-2">Searching external bus stops...</p>
+                    )}
+                    {externalStopResults.length > 0 && (
+                      <div className="mt-2 border border-gray-200 rounded-lg bg-gray-50 max-h-48 overflow-y-auto">
+                        {externalStopResults.map((stop) => (
+                          <button
+                            key={stop.id}
+                            type="button"
+                            onClick={() => handleSelectExternalStop(stop)}
+                            className="w-full text-left px-4 py-3 hover:bg-blue-50 transition border-b last:border-b-0"
+                          >
+                            <p className="font-semibold text-gray-800">{stop.name}</p>
+                            <p className="text-xs text-gray-500">
+                              {Number(stop.latitude).toFixed(4)}, {Number(stop.longitude).toFixed(4)}
+                              {stop.locality ? ` • ${stop.locality}` : ''}
+                            </p>
+                            {stop.address && (
+                              <p className="text-xs text-gray-400 mt-1">{stop.address}</p>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {externalStopSearchError && (
+                      <p className="text-xs text-amber-600 mt-2">{externalStopSearchError}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-2">
+                      Search public bus-stop data to auto-fill coordinates, or enter your own latitude and longitude if the stop is not listed.
+                    </p>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Stop Code *</label>
@@ -1145,7 +1468,7 @@ const AdminPage = () => {
                     <textarea placeholder="e.g., Near City Mall, Main Road" rows="3" value={formData.address || ''} onChange={(e) => setFormData({ ...formData, address: e.target.value })} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" />
                   </div>
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                    <p className="text-sm text-blue-800">💡 <strong>Tip:</strong> Right-click on Google Maps to copy coordinates.</p>
+                    <p className="text-sm text-blue-800"><strong>Tip:</strong> If the stop does not appear, you can still enter coordinates manually.</p>
                   </div>
                 </div>
               )}
@@ -1160,6 +1483,192 @@ const AdminPage = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-xl w-full">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">{isEditingProfile ? 'Edit Profile' : 'My Profile'}</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  {isEditingProfile
+                    ? 'Update how your admin account appears across the dashboard.'
+                    : 'View your admin details and open edit mode when you want to update them.'}
+                </p>
+              </div>
+              <button onClick={closeProfileModal} className="text-gray-500 hover:text-gray-700">
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center gap-4 p-4 rounded-2xl bg-slate-50 border">
+                <div className="relative shrink-0">
+                  {profileForm.avatarUrl ? (
+                    <img src={profileForm.avatarUrl} alt={profileForm.name} className="w-20 h-20 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-20 h-20 rounded-full bg-slate-900 text-white flex items-center justify-center text-2xl font-bold">
+                      {getInitials(profileForm.name)}
+                    </div>
+                  )}
+                  {isEditingProfile && (
+                    <>
+                      <label className="absolute inset-x-0 bottom-0 mx-auto flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition">
+                        <Camera size={14} />
+                        <input type="file" accept="image/*" className="hidden" onChange={handleProfileImageUpload} />
+                      </label>
+                      {profileForm.avatarUrl && (
+                        <button
+                          type="button"
+                          onClick={handleRemoveProfileImage}
+                          className="absolute -top-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-red-500 text-white shadow-lg hover:bg-red-600 transition"
+                          title="Remove profile picture"
+                        >
+                          <span className="text-lg leading-none">-</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xl font-semibold text-slate-900">{profileForm.name || 'Admin User'}</p>
+                  <p className="text-sm text-slate-500">{user?.email || 'No email available'}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-blue-600 mt-2">Administrator</p>
+                </div>
+              </div>
+
+              {isEditingProfile ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
+                    <input
+                      type="text"
+                      value={profileForm.name}
+                      onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Phone</label>
+                    <input
+                      type="text"
+                      value={profileForm.phone}
+                      onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Bio</label>
+                    <textarea
+                      rows="3"
+                      value={profileForm.bio}
+                      onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
+                      placeholder="A short description about your role"
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-slate-200 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Full Name</p>
+                    <p className="text-sm text-slate-900 mt-1">{profileForm.name || 'Not added yet'}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Phone</p>
+                    <p className="text-sm text-slate-900 mt-1">{profileForm.phone || 'Not added yet'}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Bio</p>
+                    <p className="text-sm text-slate-900 mt-1">{profileForm.bio || 'No bio added yet'}</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={closeProfileModal} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold px-4 py-3 rounded-xl transition">
+                  Close
+                </button>
+                {isEditingProfile ? (
+                  <button type="button" onClick={handleProfileSave} disabled={savingProfile} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-3 rounded-xl transition disabled:opacity-60">
+                    {savingProfile ? 'Saving...' : 'Save Profile'}
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => setIsEditingProfile(true)} className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-semibold px-4 py-3 rounded-xl transition">
+                    Edit Profile
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showListModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-5xl w-full max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">
+                  {listModalType === 'buses' ? 'All Active Buses' : 'All Drivers'}
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  {listModalType === 'buses' ? 'Complete live bus feed' : 'Complete driver allocation list'}
+                </p>
+              </div>
+              <button onClick={() => setShowListModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={24} />
+              </button>
+            </div>
+
+            {listModalType === 'buses' ? (
+              <div className="space-y-3">
+                {liveDashboard.liveBuses.map((busItem) => (
+                  <div key={busItem._id} className="border rounded-xl p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-gray-900">{busItem.busName} ({busItem.busNumber})</p>
+                        <p className="text-sm text-gray-500">{busItem.route?.routeName || 'No route'} • {busItem.driver?.name || 'Unassigned driver'}</p>
+                      </div>
+                      <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                        busItem.trackingStatus === 'live' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {busItem.trackingStatus === 'live' ? 'Live signal' : 'Signal stale'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {liveDashboard.drivers.map((driverItem) => {
+                  const assignedBus = liveDashboard.liveBuses.find((busItem) => busItem.driver?._id === driverItem._id)
+                    || buses.find((busItem) => busItem.driver?._id === driverItem._id);
+
+                  return (
+                    <div key={driverItem._id} className="border rounded-xl p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-gray-900">{driverItem.name}</p>
+                          <p className="text-sm text-gray-500">{driverItem.phone || driverItem.email || 'No contact info'}</p>
+                        </div>
+                        <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                          assignedBus ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'
+                        }`}>
+                          {assignedBus ? `${assignedBus.busName} (${assignedBus.busNumber})` : 'Available'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
