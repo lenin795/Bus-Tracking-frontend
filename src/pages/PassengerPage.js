@@ -109,6 +109,7 @@ const PassengerPage = () => {
   // All buses (unfiltered) + show-all toggle
   const [allBuses, setAllBuses] = useState([]);
   const [showAllBuses, setShowAllBuses] = useState(false);
+  const [isMobileTrackingMode, setIsMobileTrackingMode] = useState(false);
 
   const socketRef = useRef(null);
   const scannerRef = useRef(null);
@@ -130,6 +131,19 @@ const PassengerPage = () => {
   useEffect(() => { busStopRef.current = busStop; }, [busStop]);
   useEffect(() => { nearestBusesRef.current = nearestBuses; }, [nearestBuses]);
   useEffect(() => { busStatusRef.current = busStatus; }, [busStatus]);
+
+  useEffect(() => {
+    const updateMobileMode = () => {
+      const mobileLikeWidth = window.innerWidth <= 768;
+      const mobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+      const coarsePointer = window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+      setIsMobileTrackingMode(mobileLikeWidth || mobileUa || coarsePointer);
+    };
+
+    updateMobileMode();
+    window.addEventListener('resize', updateMobileMode);
+    return () => window.removeEventListener('resize', updateMobileMode);
+  }, []);
 
   useEffect(() => {
     if (notification) {
@@ -301,6 +315,13 @@ const PassengerPage = () => {
   }, []);
 
   const fetchRoadRoute = useCallback(async (startLat, startLon, endLat, endLon) => {
+    if (isMobileTrackingMode) {
+      setBusToStopRoute([[startLat, startLon], [endLat, endLon]]);
+      setRouteDistance(calculateDistance(startLat, startLon, endLat, endLon).toFixed(2));
+      setLoadingRoute(false);
+      return;
+    }
+
     setLoadingRoute(true);
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
@@ -320,11 +341,21 @@ const PassengerPage = () => {
     } finally {
       setLoadingRoute(false);
     }
-  }, []);
+  }, [calculateDistance, isMobileTrackingMode]);
 
   const fetchCompleteRouteWithRoads = useCallback(async (stops) => {
     try {
       if (stops.length < 2) return;
+
+      if (isMobileTrackingMode || stops.length > 12) {
+        setRouteCoordinates(
+          stops
+            .filter((stop) => hasValidCoordinates(stop?.location))
+            .map((stop) => [Number(stop.location.latitude), Number(stop.location.longitude)])
+        );
+        return;
+      }
+
       const coordinates = stops.map(stop =>
         `${stop.location.longitude},${stop.location.latitude}`
       ).join(';');
@@ -341,7 +372,7 @@ const PassengerPage = () => {
       console.error('Error fetching complete route:', error);
       setRouteCoordinates(stops.map(stop => [stop.location.latitude, stop.location.longitude]));
     }
-  }, []);
+  }, [isMobileTrackingMode]);
 
   useEffect(() => {
     const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -529,7 +560,7 @@ const PassengerPage = () => {
         fetchCompleteRouteWithRoads(stopsForRoute);
       }
     }
-  }, [selectedBus?._id, busStop, directionStops]);
+  }, [selectedBus?._id, busStop, directionStops, isMobileTrackingMode, fetchRoadRoute, fetchCompleteRouteWithRoads]);
 
   const startScanner = () => {
     setShowScanner(true);
@@ -866,6 +897,14 @@ const PassengerPage = () => {
 
   const displayStops = directionStops.length > 0 ? directionStops : selectedBus?.route?.stops || [];
   const safeDisplayStops = displayStops.filter((stop) => hasValidCoordinates(stop?.location));
+  const renderedStops = isMobileTrackingMode
+    ? safeDisplayStops.filter((stop) => {
+        const isUserStop = stop._id === busStop?._id;
+        const isNextStop = nextStop && stop._id === nextStop._id;
+        const isDestination = destinationStop && stop._id === destinationStop._id;
+        return isUserStop || isNextStop || isDestination;
+      })
+    : safeDisplayStops;
   const hasTrackingCoordinates = hasValidCoordinates(selectedBus?.currentLocation) && hasValidCoordinates(busStop?.location);
   const safeMapCenter = Array.isArray(mapCenter) && mapCenter.length === 2
     && Number.isFinite(Number(mapCenter[0])) && Number.isFinite(Number(mapCenter[1]))
@@ -1340,7 +1379,7 @@ const PassengerPage = () => {
                       <Polyline positions={busToStopRoute} color="#10B981" weight={6} opacity={0.9} />
                     )}
 
-                    {safeDisplayStops.map((stop) => {
+                    {renderedStops.map((stop) => {
                       const isUserStop = stop._id === busStop._id;
                       const isNextStop = nextStop && stop._id === nextStop._id;
                       const stopIndex = safeDisplayStops.findIndex(s => s._id === stop._id);
@@ -1415,13 +1454,16 @@ const PassengerPage = () => {
                 <p className="text-xs font-semibold text-gray-700 mb-2">Map Legend:</p>
                 <div className="flex flex-wrap gap-4 text-xs">
                   <div className="flex items-center gap-2"><div className="w-8 h-1 bg-blue-500"></div><span>Complete Route</span></div>
-                  <div className="flex items-center gap-2"><div className="w-8 h-1 bg-green-500"></div><span>Road to Your Stop</span></div>
+                  <div className="flex items-center gap-2"><div className="w-8 h-1 bg-green-500"></div><span>{isMobileTrackingMode ? 'Direct path to your stop' : 'Road to Your Stop'}</span></div>
                   <div className="flex items-center gap-2"><div className="w-4 h-4 bg-blue-500 rounded-full"></div><span>Bus</span></div>
                   <div className="flex items-center gap-2"><div className="w-4 h-4 bg-red-500 rounded-full"></div><span>Your Stop</span></div>
                   <div className="flex items-center gap-2"><div className="w-3 h-3 bg-orange-500 rounded-full"></div><span>Next Stop</span></div>
                   <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded-full"></div><span>Upcoming</span></div>
                   <div className="flex items-center gap-2"><div className="w-3 h-3 bg-gray-400 rounded-full opacity-60"></div><span>Passed</span></div>
                 </div>
+                {isMobileTrackingMode && (
+                  <p className="text-xs text-gray-500 mt-3">Mobile mode is using a lighter map so tracking stays stable on phones.</p>
+                )}
               </div>
             </div>
 
