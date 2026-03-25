@@ -68,6 +68,10 @@ const getSafeSpeed = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+const hasValidCoordinates = (location) =>
+  location &&
+  Number.isFinite(Number(location.latitude)) &&
+  Number.isFinite(Number(location.longitude));
 
 const PassengerPage = () => {
   const [searchParams] = useSearchParams();
@@ -861,6 +865,14 @@ const PassengerPage = () => {
   };
 
   const displayStops = directionStops.length > 0 ? directionStops : selectedBus?.route?.stops || [];
+  const safeDisplayStops = displayStops.filter((stop) => hasValidCoordinates(stop?.location));
+  const hasTrackingCoordinates = hasValidCoordinates(selectedBus?.currentLocation) && hasValidCoordinates(busStop?.location);
+  const safeMapCenter = Array.isArray(mapCenter) && mapCenter.length === 2
+    && Number.isFinite(Number(mapCenter[0])) && Number.isFinite(Number(mapCenter[1]))
+    ? [Number(mapCenter[0]), Number(mapCenter[1])]
+    : hasTrackingCoordinates
+      ? [Number(selectedBus.currentLocation.latitude), Number(selectedBus.currentLocation.longitude)]
+      : null;
 
   const renderBusCard = (bus, isOutOfRange = false) => {
     const distance = bus.currentLocation && busStop
@@ -1246,7 +1258,7 @@ const PassengerPage = () => {
         )}
 
         {/* Tracking View */}
-        {selectedBus && selectedBus.currentLocation && (
+        {selectedBus && hasTrackingCoordinates && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white rounded-2xl shadow-xl p-6">
               <div className="flex justify-between items-center mb-4">
@@ -1316,10 +1328,10 @@ const PassengerPage = () => {
               })()}
 
               <div className="h-96 rounded-lg overflow-hidden border-2 border-gray-200">
-                {mapCenter && (
-                  <MapContainer center={mapCenter} zoom={14} style={{ height: '100%', width: '100%' }}>
+                {safeMapCenter ? (
+                  <MapContainer key={`${selectedBus._id}-${mapType}`} center={safeMapCenter} zoom={14} style={{ height: '100%', width: '100%' }}>
                     <TileLayer url={getTileLayerUrl()} attribution={getTileLayerAttribution()} />
-                    <MapUpdater center={mapCenter} />
+                    <MapUpdater center={safeMapCenter} />
 
                     {routeCoordinates.length > 0 && (
                       <Polyline positions={routeCoordinates} color="#3B82F6" weight={5} opacity={0.6} />
@@ -1328,10 +1340,10 @@ const PassengerPage = () => {
                       <Polyline positions={busToStopRoute} color="#10B981" weight={6} opacity={0.9} />
                     )}
 
-                    {displayStops.map((stop) => {
+                    {safeDisplayStops.map((stop) => {
                       const isUserStop = stop._id === busStop._id;
                       const isNextStop = nextStop && stop._id === nextStop._id;
-                      const stopIndex = displayStops.findIndex(s => s._id === stop._id);
+                      const stopIndex = safeDisplayStops.findIndex(s => s._id === stop._id);
                       const nextStopIndex = nextStop ? nextStop.index : -1;
                       const isPassed = nextStopIndex !== -1 && stopIndex < nextStopIndex;
 
@@ -1353,7 +1365,7 @@ const PassengerPage = () => {
                     })}
 
                     <Marker
-                      position={[selectedBus.currentLocation.latitude, selectedBus.currentLocation.longitude]}
+                      position={[Number(selectedBus.currentLocation.latitude), Number(selectedBus.currentLocation.longitude)]}
                       icon={busIcon}
                     >
                       <Popup>
@@ -1364,6 +1376,13 @@ const PassengerPage = () => {
                       </Popup>
                     </Marker>
                   </MapContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center bg-gray-50 text-center px-6">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-700">Tracking map is unavailable for this bus right now.</p>
+                      <p className="text-xs text-gray-500 mt-2">Waiting for valid location coordinates from the bus.</p>
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -1428,9 +1447,9 @@ const PassengerPage = () => {
                 </div>
               )}
 
-              <h4 className="font-semibold text-gray-700 mb-3 text-sm">All Stops ({displayStops.length})</h4>
+              <h4 className="font-semibold text-gray-700 mb-3 text-sm">All Stops ({safeDisplayStops.length})</h4>
               <div className="space-y-3 max-h-96 overflow-y-auto">
-                {displayStops.map((stop, index) => {
+                {safeDisplayStops.map((stop, index) => {
                   const isUserStop = stop._id === busStop._id;
                   const isNextStop = nextStop && stop._id === nextStop._id;
                   const isPassed = nextStop && index < nextStop.index;
