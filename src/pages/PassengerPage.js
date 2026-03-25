@@ -64,6 +64,10 @@ function MapUpdater({ center }) {
 
 // ✅ Normalize stop code: trim whitespace and convert to uppercase
 const normalizeStopCode = (code) => code?.trim().toUpperCase() ?? '';
+const getSafeSpeed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const PassengerPage = () => {
   const [searchParams] = useSearchParams();
@@ -830,7 +834,7 @@ const PassengerPage = () => {
           bus.currentLocation.latitude, bus.currentLocation.longitude,
           busStop.location.latitude, busStop.location.longitude
         ).toFixed(2));
-    const speed = bus.speed || 30;
+    const speed = getSafeSpeed(bus.speed) || 30;
     if (speed < 5) return 'Bus stopped';
     const timeInMinutes = Math.round((distance / speed) * 60);
     if (timeInMinutes < 1) return 'Arriving now!';
@@ -1137,7 +1141,7 @@ const PassengerPage = () => {
                         <Popup>
                           <strong>{bus.busName}</strong><br />
                           {bus.busNumber}<br />
-                          Speed: {bus.speed ? `${bus.speed.toFixed(0)} km/h` : 'N/A'}
+                          Speed: {getSafeSpeed(bus.speed) > 0 ? `${getSafeSpeed(bus.speed).toFixed(0)} km/h` : 'N/A'}
                         </Popup>
                       </Marker>
                     ))}
@@ -1355,7 +1359,7 @@ const PassengerPage = () => {
                       <Popup>
                         <strong>{selectedBus.busName}</strong><br />
                         {selectedBus.busNumber}<br />
-                        Speed: {selectedBus.speed?.toFixed(0) || 0} km/h
+                        Speed: {getSafeSpeed(selectedBus.speed).toFixed(0)} km/h
                         {destinationStop && <><br />Going to: {destinationStop.stopName}</>}
                       </Popup>
                     </Marker>
@@ -1384,7 +1388,7 @@ const PassengerPage = () => {
                 </div>
                 <div className="bg-purple-50 p-4 rounded-lg text-center">
                   <p className="text-sm text-gray-600">Speed</p>
-                  <p className="text-2xl font-bold text-purple-600">{selectedBus.speed?.toFixed(0) || 0} km/h</p>
+                  <p className="text-2xl font-bold text-purple-600">{getSafeSpeed(selectedBus.speed).toFixed(0)} km/h</p>
                 </div>
               </div>
 
