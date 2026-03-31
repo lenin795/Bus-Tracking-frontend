@@ -62,7 +62,7 @@ function MapUpdater({ center }) {
   return null;
 }
 
-// ✅ Normalize stop code: trim whitespace and convert to uppercase
+// Normalize stop code: trim whitespace and convert to uppercase
 const normalizeStopCode = (code) => code?.trim().toUpperCase() ?? '';
 const getSafeSpeed = (value) => {
   const parsed = Number(value);
@@ -120,11 +120,11 @@ const PassengerPage = () => {
   const nearestBusesRef = useRef([]);
   const previousLocationRef = useRef(null);
 
-  // ✅ FIX: Track whether bus has already departed from user's stop
+  // Track whether bus has already departed from user's stop
   const hasDepartedRef = useRef(false);
-  // ✅ FIX: Track whether bus had previously arrived at user's stop (to detect departure)
+  // Track whether bus had previously arrived at user's stop (to detect departure)
   const hasArrivedAtStopRef = useRef(false);
-  // ✅ FIX: Keep a ref for current busStatus to use inside callbacks without stale closure
+  // Keep a ref for current busStatus to use inside callbacks without stale closure
   const busStatusRef = useRef(null);
 
   useEffect(() => { selectedBusRef.current = selectedBus; }, [selectedBus]);
@@ -234,8 +234,6 @@ const PassengerPage = () => {
   const calculateNextStop = useCallback((bus, userStop, orderedStops) => {
     if (!bus?.currentLocation || !orderedStops?.length) return null;
 
-    // ✅ FIX: If bus has already departed the user's stop, don't recalculate
-    // next stop in a way that would show user's stop again
     const userStopIndex = orderedStops.findIndex(s => s._id === userStop?._id);
 
     let closestStopAhead = null;
@@ -248,9 +246,12 @@ const PassengerPage = () => {
         stop.location.latitude, stop.location.longitude
       );
 
-      // ✅ FIX: If bus has departed, only consider stops AFTER user's stop
       if (hasDepartedRef.current) {
-        if (i <= userStopIndex) continue; // skip user's stop and anything before it
+        if (i <= userStopIndex) continue;
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestStopAhead = { ...stop, index: i, distance: distance.toFixed(2) };
+        }
       } else {
         if (userStopIndex === -1 || i <= userStopIndex) {
           if (distance < minDistance) {
@@ -259,27 +260,17 @@ const PassengerPage = () => {
           }
         }
       }
-
-      // For departed case: find closest stop after user's stop
-      if (hasDepartedRef.current && i > userStopIndex) {
-        if (distance < minDistance) {
-          minDistance = distance;
-          closestStopAhead = { ...stop, index: i, distance: distance.toFixed(2) };
-        }
-      }
     }
 
     return closestStopAhead;
   }, []);
 
-  // ✅ FIX: Updated determineBusStatus with departure lock and hysteresis
   const determineBusStatus = useCallback((bus, userStop, nextStopData, orderedStops) => {
     if (!bus?.currentLocation || !userStop || !nextStopData || !orderedStops) return 'far';
 
     const userStopIndex = orderedStops.findIndex(s => s._id === userStop._id);
     if (userStopIndex === -1) return 'far';
 
-    // ✅ FIX: Once departed, always return 'passed' — no going back
     if (hasDepartedRef.current) return 'passed';
 
     const distanceToUserStop = calculateDistance(
@@ -287,28 +278,23 @@ const PassengerPage = () => {
       userStop.location.latitude, userStop.location.longitude
     );
 
-    // ✅ FIX: Bus is clearly past user's stop in the ordered sequence
     if (nextStopData.index > userStopIndex) {
       hasDepartedRef.current = true;
       hasArrivedAtStopRef.current = false;
       return 'passed';
     }
 
-    // ✅ FIX: Bus arrived at stop (within 50m)
     if (distanceToUserStop <= 0.05) {
       hasArrivedAtStopRef.current = true;
       return 'at_stop';
     }
 
-    // ✅ FIX: Bus was at stop and is now moving away (distance > 150m) → departed
-    // Uses hysteresis: arrive=50m, depart=150m to prevent flickering
     if (hasArrivedAtStopRef.current && distanceToUserStop > 0.15) {
       hasDepartedRef.current = true;
       hasArrivedAtStopRef.current = false;
       return 'passed';
     }
 
-    // Bus is within 1km and heading toward user stop
     if (distanceToUserStop <= 1 && nextStopData.index <= userStopIndex) return 'approaching';
 
     return 'far';
@@ -458,7 +444,6 @@ const PassengerPage = () => {
             setDirectionStops(ordered);
             setDestinationStop(ordered[ordered.length - 1]);
 
-            // ✅ FIX: Reset departure state when direction changes (bus turned around)
             hasDepartedRef.current = false;
             hasArrivedAtStopRef.current = false;
 
@@ -483,21 +468,17 @@ const PassengerPage = () => {
         setLastUpdateTime(new Date());
 
         if (currentBusStop) {
-          // Use a local ref snapshot for directionStops to avoid stale closure
           const stopsToUse = directionStops.length > 0 ? directionStops : currentSelectedBus.route?.stops;
           const nextStopData = calculateNextStop(updatedBus, currentBusStop, stopsToUse);
           setNextStop(nextStopData);
 
           const status = determineBusStatus(updatedBus, currentBusStop, nextStopData, stopsToUse);
 
-          // ✅ FIX: Only update busStatus if it actually changed, and never go backwards
-          // Order: far → approaching → at_stop → passed
           const statusOrder = { far: 0, approaching: 1, at_stop: 2, passed: 3 };
           const currentStatusRank = statusOrder[busStatusRef.current] ?? 0;
           const newStatusRank = statusOrder[status] ?? 0;
 
           if (status !== busStatusRef.current) {
-            // ✅ FIX: Allow status to go forward but NOT backward (unless bus turned around)
             if (newStatusRank >= currentStatusRank || hasDepartedRef.current) {
               setBusStatus(status);
               if (status === 'approaching') {
@@ -510,7 +491,6 @@ const PassengerPage = () => {
             }
           }
 
-          // ✅ FIX: Only fetch road route if bus hasn't passed yet (saves API calls)
           if (!hasDepartedRef.current) {
             fetchRoadRoute(newLat, newLng, currentBusStop.location.latitude, currentBusStop.location.longitude);
           }
@@ -641,10 +621,8 @@ const PassengerPage = () => {
       stopScanner();
       const url = new URL(decodedText);
       const stopCode = url.searchParams.get('stop');
-      // ✅ Normalize stop code from QR scan URL param
       if (stopCode) await fetchNearestBuses(stopCode);
     } catch {
-      // ✅ Normalize raw stop code scanned directly
       if (decodedText?.length > 0) {
         await fetchNearestBuses(decodedText);
       } else {
@@ -660,7 +638,8 @@ const PassengerPage = () => {
     }
   };
 
-  // ✅ Normalize all stop codes before API lookup (trim + uppercase)
+  // ✅ FIX: fetchNearestBuses now controls scanner/manual entry closing
+  // Scanner is only hidden AFTER a successful fetch — not before
   const fetchNearestBuses = async (stopCode) => {
     const normalizedCode = normalizeStopCode(stopCode);
     setLoading(true);
@@ -703,23 +682,29 @@ const PassengerPage = () => {
         }
       }
 
+      // ✅ FIX: Only close scanner UI after a SUCCESSFUL fetch
+      setShowScanner(false);
       setShowManualEntry(false);
       setManualStopCode('');
     } catch (err) {
+      // ✅ FIX: On error, keep showScanner true so UI doesn't go blank
       setError(err.response?.data?.message || 'Failed to fetch buses. Please check the stop code.');
       setScanError('Stop not found. Please try again or enter the stop code manually.');
+      // Keep showScanner open so the manual entry remains accessible
+      setShowScanner(true);
+      setShowManualEntry(true);
     } finally {
       setLoading(false);
     }
   };
 
+  // ✅ FIX: handleManualEntry no longer hides scanner prematurely
   const handleManualEntry = (e) => {
     e.preventDefault();
     if (manualStopCode.trim()) {
-      // ✅ normalizeStopCode is applied inside fetchNearestBuses
       fetchNearestBuses(manualStopCode);
-      setShowScanner(false);
-      setShowManualEntry(false);
+      // Removed: setShowScanner(false) and setShowManualEntry(false)
+      // These are now handled inside fetchNearestBuses on success
     }
   };
 
@@ -735,7 +720,6 @@ const PassengerPage = () => {
     setDestinationStop(null);
     previousLocationRef.current = bus.currentLocation || null;
 
-    // ✅ FIX: Reset all departure tracking refs when starting a new track session
     hasDepartedRef.current = false;
     hasArrivedAtStopRef.current = false;
     busStatusRef.current = null;
@@ -816,7 +800,6 @@ const PassengerPage = () => {
     setDestinationStop(null);
     previousLocationRef.current = null;
 
-    // ✅ FIX: Reset departure refs on stop tracking
     hasDepartedRef.current = false;
     hasArrivedAtStopRef.current = false;
     busStatusRef.current = null;
@@ -849,7 +832,6 @@ const PassengerPage = () => {
     setDestinationStop(null);
     previousLocationRef.current = null;
 
-    // ✅ FIX: Reset departure refs on full reset
     hasDepartedRef.current = false;
     hasArrivedAtStopRef.current = false;
     busStatusRef.current = null;
@@ -968,7 +950,6 @@ const PassengerPage = () => {
     );
   };
 
-  // ✅ Helper to get status banner config (includes new at_stop status)
   const getStatusBannerConfig = () => {
     switch (busStatus) {
       case 'approaching':
@@ -1045,7 +1026,7 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {error && !busStop && (
+        {error && !busStop && !showScanner && (
           <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-r-lg">
             <p className="font-semibold">Error</p>
             <p>{error}</p>
@@ -1059,6 +1040,7 @@ const PassengerPage = () => {
           </div>
         )}
 
+        {/* ✅ FIX: Landing page — only show when no busStop, no scanner open, no selected bus, not loading */}
         {!busStop && !showScanner && !selectedBus && !loading && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white rounded-[2rem] shadow-xl p-12">
@@ -1096,7 +1078,8 @@ const PassengerPage = () => {
           </div>
         )}
 
-        {showScanner && (
+        {/* ✅ Scanner view — shown when showScanner is true AND not loading */}
+        {showScanner && !loading && (
           <div className="bg-white rounded-2xl shadow-xl p-6">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-800">Scan QR Code</h2>
@@ -1343,7 +1326,7 @@ const PassengerPage = () => {
                 </div>
               )}
 
-              {/* ✅ Bus Status Banner — now handles at_stop too */}
+              {/* Bus Status Banner */}
               {busStatus && (() => {
                 const config = getStatusBannerConfig();
                 return (
