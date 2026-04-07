@@ -715,8 +715,8 @@ const AdminPage = () => {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 pt-24 pb-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div className="max-w-7xl mx-auto px-4 pt-24 pb-6 mt-10">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4  mb-6">
           <div className="bg-white rounded-2xl shadow-md p-5">
             <p className="text-sm font-semibold text-gray-500">Fleet Overview</p>
             <p className="text-3xl font-bold text-gray-900 mt-2">{liveStats?.totalBuses ?? buses.length}</p>

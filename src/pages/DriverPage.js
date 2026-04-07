@@ -487,7 +487,7 @@ const DriverPage = () => {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 pt-24 pb-6">
+      <div className="max-w-7xl mx-auto px-4 pt-24 mt-10 pb-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-white rounded-2xl shadow-md p-5">
             <p className="text-sm font-semibold text-gray-500">Trip Status</p>
@@ -520,7 +520,7 @@ const DriverPage = () => {
           </div>
         )}
 
-        <div className="bg-white rounded-2xl shadow-md p-6 mb-6">
+        <div className="bg-white rounded-2xl shadow-md p-6  mb-6">
           <div className="flex justify-between items-start">
             <div>
               <h2 className="text-xl font-semibold text-gray-800">{bus.busName}</h2>
