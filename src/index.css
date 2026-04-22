@@ -31,3 +31,11 @@ body {
 .leaflet-popup {
   z-index: 2 !important;
 }
+@keyframes moveBus {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100vw);
+  }
+}
